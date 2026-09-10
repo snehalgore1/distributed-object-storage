@@ -57,7 +57,12 @@ jobs:
       - name: Build (TSan)
         run: cmake --build build-tsan
 
-      - name: Test (TSan)
-        run: ctest --test-dir build-tsan --output-on-failure
+      # Exclude the gRPC-backed integration tests: the distro gRPC/abseil shared
+      # libraries are not TSan-instrumented, so TSan reports false positives from
+      # gRPC's own threads. Our concurrency code (thread pool, sharded object
+      # store, coordinator) is fully covered by the unit-test ConcurrencyTest
+      # suite, which does run here.
+      - name: Test (TSan, excluding gRPC integration tests)
+        run: ctest --test-dir build-tsan --output-on-failure -E '^ReplicationTest'
         env:
           TSAN_OPTIONS: halt_on_error=1

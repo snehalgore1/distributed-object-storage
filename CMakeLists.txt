@@ -41,7 +41,10 @@ add_library(dos_core
   src/common/status.cc
   src/common/sha256.cc
   src/common/digest.cc
+  src/common/hash.cc
   src/common/thread_pool.cc
+  src/cluster/consistent_hash_ring.cc
+  src/cluster/cluster_map.cc
   src/storage/sqlite_metadata_store.cc
   src/storage/local_object_store.cc)
 target_include_directories(dos_core
@@ -52,9 +55,12 @@ target_include_directories(dos_core
 # but ${SQLite3_LIBRARIES} is stable.
 target_link_libraries(dos_core PUBLIC ${SQLite3_LIBRARIES} Threads::Threads PRIVATE dos_warnings)
 
-# --- Demo tool ----------------------------------------------------------------
+# --- Tools --------------------------------------------------------------------
 add_executable(storage_demo tools/demo/storage_demo.cc)
 target_link_libraries(storage_demo PRIVATE dos_core dos_warnings)
+
+add_executable(rebalance_bench tools/clusterbench/rebalance_bench.cc)
+target_link_libraries(rebalance_bench PRIVATE dos_core dos_warnings)
 
 # --- Unit tests ---------------------------------------------------------------
 if(BUILD_TESTING)
@@ -63,7 +69,10 @@ if(BUILD_TESTING)
     tests/unit/digest_test.cc
     tests/unit/local_object_store_test.cc
     tests/unit/thread_pool_test.cc
-    tests/unit/concurrency_test.cc)
+    tests/unit/concurrency_test.cc
+    tests/unit/hash_test.cc
+    tests/unit/consistent_hash_ring_test.cc
+    tests/unit/cluster_map_test.cc)
   target_link_libraries(dos_unit_tests PRIVATE dos_core dos_warnings GTest::gtest_main)
   gtest_discover_tests(dos_unit_tests)
 endif()

@@ -4,11 +4,12 @@ A fault-tolerant distributed object storage system in C++20 — built systems-fi
 to demonstrate concurrency, storage durability, distributed coordination, and
 performance engineering.
 
-> **Status:** Milestones 0–2 complete. A correct, tested, **concurrent**
-> single-node storage engine with content checksums, atomic durable writes,
-> versioning, SQLite metadata, a bounded-queue thread pool, and sharded locking
-> — ThreadSanitizer-clean. Distributed layers (gRPC, consistent hashing, quorum
-> replication, failure detection, WAL recovery) are on the roadmap below.
+> **Status:** Milestones 0–3 complete. A correct, tested, **concurrent**
+> single-node storage engine (checksums, atomic durable writes, versioning,
+> SQLite metadata, bounded-queue thread pool, sharded locking — TSan-clean) plus
+> the **placement** layer: a consistent-hash ring with virtual nodes and a
+> cluster map. Remaining distributed layers (gRPC transport, quorum replication,
+> failure detection, WAL recovery) are on the roadmap below.
 
 ## What works today
 
@@ -23,6 +24,9 @@ performance engineering.
 - **Concurrency**: fixed-size `ThreadPool` with a bounded queue (overload →
   `kUnavailable`, no unbounded growth) and **sharded locking** on the object
   store (exclusive for writes, shared for reads). ThreadSanitizer-clean.
+- **Placement**: 64-bit **consistent-hash ring** with virtual nodes and a
+  `ClusterMap`; deterministic key→node mapping and replica selection. Adding a
+  node moves only ~1/N of keys (measured: 25% vs modulo's 75% going 3→4 nodes).
 
 ## Build & test
 
@@ -61,6 +65,17 @@ DELETE then GET -> NOT_FOUND: tombstoned: greeting/hello.txt (expected NOT_FOUND
 OK
 ```
 
+Consistent-hashing rebalancing benchmark (modulo vs. consistent, 3→4 nodes):
+
+```sh
+./build/rebalance_bench            # ./build/rebalance_bench [num_keys] [vnodes]
+```
+
+```
+Distribution across 3 nodes:  node-a 32.30%  node-b 33.46%  node-c 34.24%
+Adding a 4th node moves:      consistent 25.25%    modulo 74.99%   (~3x fewer)
+```
+
 ## Layout
 
 ```
@@ -84,7 +99,7 @@ docs/     architecture.md, storage-engine.md
 | ✅ M0 | Build/test foundation (CMake, CI, GoogleTest, clang-format) |
 | ✅ M1 | Single-node storage engine (checksums, atomic writes, versioning) |
 | ✅ M2 | Concurrency: thread pool, bounded queue, sharded locks (TSan-clean) |
-| M3 | Cluster membership + consistent hashing (gRPC) |
+| ✅ M3 | Consistent-hash ring + virtual nodes + cluster map (placement) |
 | M4 | Replication factor 3 + quorum writes |
 | M5 | Versioning & idempotency (conditional PUT, request IDs) |
 | M6 | Failure detection + replica repair |

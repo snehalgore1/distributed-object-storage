@@ -4,12 +4,13 @@ A fault-tolerant distributed object storage system in C++20 — built systems-fi
 to demonstrate concurrency, storage durability, distributed coordination, and
 performance engineering.
 
-> **Status:** Milestones 0–3 complete. A correct, tested, **concurrent**
-> single-node storage engine (checksums, atomic durable writes, versioning,
-> SQLite metadata, bounded-queue thread pool, sharded locking — TSan-clean) plus
-> the **placement** layer: a consistent-hash ring with virtual nodes and a
-> cluster map. Remaining distributed layers (gRPC transport, quorum replication,
-> failure detection, WAL recovery) are on the roadmap below.
+> **Status:** Milestones 0–4 complete. A concurrent single-node storage engine
+> (checksums, atomic durable writes, versioning, SQLite metadata, bounded-queue
+> thread pool, sharded locking — TSan-clean), a consistent-hash **placement**
+> layer, and **replication over gRPC**: three storage-node processes with an
+> RF=3 / W=2 quorum coordinator, checksum-verified read fallback, and
+> replica-health tracking. Remaining layers (failure detection + repair, WAL
+> recovery, metadata-service split, observability, deployment) are on the roadmap.
 
 ## What works today
 
@@ -27,14 +28,20 @@ performance engineering.
 - **Placement**: 64-bit **consistent-hash ring** with virtual nodes and a
   `ClusterMap`; deterministic key→node mapping and replica selection. Adding a
   node moves only ~1/N of keys (measured: 25% vs modulo's 75% going 3→4 nodes).
+- **Replication over gRPC**: `dos_node` storage-node processes serving a
+  `StorageNode` service; a `Coordinator` writes to the RF=3 replica set with a
+  W=2 **write quorum**, reads with **checksum-verified fallback** across
+  replicas, and tracks replica health. Survives a single node down; fails a
+  write cleanly when quorum is unreachable.
 
 ## Build & test
 
-Requires a C++20 compiler, CMake ≥ 3.20, Ninja, GoogleTest, and SQLite3.
+Requires a C++20 compiler, CMake ≥ 3.20, Ninja, GoogleTest, SQLite3, gRPC +
+Protobuf, and pkg-config.
 
 ```sh
 # macOS deps
-brew install cmake ninja googletest sqlite
+brew install cmake ninja pkgconf googletest sqlite grpc protobuf
 
 cmake -S . -B build -G Ninja -DDOS_WERROR=ON
 cmake --build build
@@ -76,6 +83,19 @@ Distribution across 3 nodes:  node-a 32.30%  node-b 33.46%  node-c 34.24%
 Adding a 4th node moves:      consistent 25.25%    modulo 74.99%   (~3x fewer)
 ```
 
+Run a three-node cluster as separate processes:
+
+```sh
+./build/dos_node --id node-a --address 127.0.0.1:9101 --data-dir /tmp/dos/a &
+./build/dos_node --id node-b --address 127.0.0.1:9102 --data-dir /tmp/dos/b &
+./build/dos_node --id node-c --address 127.0.0.1:9103 --data-dir /tmp/dos/c &
+```
+
+The `Coordinator` fans writes across the replica set and serves reads with
+checksum-verified fallback (see [docs/protocol.md](docs/protocol.md)); the
+end-to-end quorum and failover behavior is exercised in
+`tests/integration/replication_test.cc`.
+
 ## Layout
 
 ```
@@ -100,7 +120,7 @@ docs/     architecture.md, storage-engine.md
 | ✅ M1 | Single-node storage engine (checksums, atomic writes, versioning) |
 | ✅ M2 | Concurrency: thread pool, bounded queue, sharded locks (TSan-clean) |
 | ✅ M3 | Consistent-hash ring + virtual nodes + cluster map (placement) |
-| M4 | Replication factor 3 + quorum writes |
+| ✅ M4 | Replication over gRPC: RF=3, W=2 quorum, checksum-verified read fallback |
 | M5 | Versioning & idempotency (conditional PUT, request IDs) |
 | M6 | Failure detection + replica repair |
 | M7 | Write-ahead log + crash recovery |

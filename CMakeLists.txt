@@ -33,6 +33,41 @@ find_package(GTest REQUIRED)
 find_package(SQLite3 REQUIRED)
 find_package(Threads REQUIRED)
 
+# gRPC + Protobuf via pkg-config (portable across Homebrew and apt, which do not
+# both ship CMake config packages). Codegen uses the protoc/plugin executables.
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(GRPCPP REQUIRED IMPORTED_TARGET grpc++)
+pkg_check_modules(PROTOBUF REQUIRED IMPORTED_TARGET protobuf)
+find_program(PROTOC protoc REQUIRED)
+find_program(GRPC_CPP_PLUGIN grpc_cpp_plugin REQUIRED)
+
+# --- Generated protobuf/gRPC code ---------------------------------------------
+set(PROTO_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/proto)
+set(PROTO_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/gen)
+set(PROTO_GEN
+  ${PROTO_GEN_DIR}/storage.pb.cc
+  ${PROTO_GEN_DIR}/storage.pb.h
+  ${PROTO_GEN_DIR}/storage.grpc.pb.cc
+  ${PROTO_GEN_DIR}/storage.grpc.pb.h)
+add_custom_command(
+  OUTPUT ${PROTO_GEN}
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${PROTO_GEN_DIR}
+  COMMAND ${PROTOC}
+    --proto_path=${PROTO_SRC_DIR}
+    --cpp_out=${PROTO_GEN_DIR}
+    --grpc_out=${PROTO_GEN_DIR}
+    --plugin=protoc-gen-grpc=${GRPC_CPP_PLUGIN}
+    ${PROTO_SRC_DIR}/storage.proto
+  DEPENDS ${PROTO_SRC_DIR}/storage.proto
+  COMMENT "Generating gRPC/protobuf code from storage.proto"
+  VERBATIM)
+
+# dos_proto: generated code only. Not built with the strict warning policy since
+# generated sources are not ours to lint.
+add_library(dos_proto ${PROTO_GEN_DIR}/storage.pb.cc ${PROTO_GEN_DIR}/storage.grpc.pb.cc)
+target_include_directories(dos_proto PUBLIC ${PROTO_GEN_DIR})
+target_link_libraries(dos_proto PUBLIC PkgConfig::GRPCPP PkgConfig::PROTOBUF Threads::Threads)
+
 include(CTest)
 include(GoogleTest)
 
@@ -55,12 +90,23 @@ target_include_directories(dos_core
 # but ${SQLite3_LIBRARIES} is stable.
 target_link_libraries(dos_core PUBLIC ${SQLite3_LIBRARIES} Threads::Threads PRIVATE dos_warnings)
 
+# --- RPC layer (server, client, coordinator) ----------------------------------
+add_library(dos_rpc
+  src/network/storage_node_server.cc
+  src/network/storage_node_client.cc
+  src/network/coordinator.cc)
+target_include_directories(dos_rpc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(dos_rpc PUBLIC dos_core dos_proto PRIVATE dos_warnings)
+
 # --- Tools --------------------------------------------------------------------
 add_executable(storage_demo tools/demo/storage_demo.cc)
 target_link_libraries(storage_demo PRIVATE dos_core dos_warnings)
 
 add_executable(rebalance_bench tools/clusterbench/rebalance_bench.cc)
 target_link_libraries(rebalance_bench PRIVATE dos_core dos_warnings)
+
+add_executable(dos_node tools/node/node_main.cc)
+target_link_libraries(dos_node PRIVATE dos_rpc dos_warnings)
 
 # --- Unit tests ---------------------------------------------------------------
 if(BUILD_TESTING)
@@ -75,4 +121,9 @@ if(BUILD_TESTING)
     tests/unit/cluster_map_test.cc)
   target_link_libraries(dos_unit_tests PRIVATE dos_core dos_warnings GTest::gtest_main)
   gtest_discover_tests(dos_unit_tests)
+
+  add_executable(dos_integration_tests
+    tests/integration/replication_test.cc)
+  target_link_libraries(dos_integration_tests PRIVATE dos_rpc dos_warnings GTest::gtest_main)
+  gtest_discover_tests(dos_integration_tests)
 endif()

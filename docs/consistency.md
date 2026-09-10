@@ -50,9 +50,10 @@ key would resolve to different nodes on different hosts.
 The replica set produced here is exactly what Milestone 4 writes to under a
 quorum, and what Milestone 6 repairs when a node fails.
 
-## Not yet decided here
+## Consistency model (Milestone 4)
 
-Consistency (what a read guarantees after a write) is a property of the
-replication protocol, not placement. That is defined and tested in Milestone 4
-(RF=3, write quorum W=2). Until then, placement simply answers *where* a key's
-replicas should live.
+Consistency is a property of the replication protocol, not placement. The
+replica set produced here is written under a quorum and read with fallback; the
+full write/read protocol, the "durable enough to ACK" definition, and an honest
+statement of the (last-write-wins, non-linearizable) consistency model live in
+[protocol.md](protocol.md).

@@ -21,6 +21,11 @@ public:
   // assigned version). Overwrites bump the version monotonically.
   virtual StatusOr<ObjectMetadata> Put(std::string_view key, std::string_view data) = 0;
 
+  // Writes `data` at an externally-assigned `version` (used by the replication
+  // coordinator so all replicas store the same version). `version` must be > 0.
+  virtual StatusOr<ObjectMetadata> PutWithVersion(std::string_view key, std::string_view data,
+                                                  uint64_t version) = 0;
+
   // Returns the object bytes, after verifying the stored checksum. A checksum
   // mismatch yields kChecksumMismatch; a missing key yields kNotFound.
   virtual StatusOr<std::string> Get(std::string_view key) = 0;

@@ -133,24 +133,43 @@ StatusOr<ObjectMetadata> LocalObjectStore::Put(std::string_view key, std::string
   if (key.empty()) {
     return Status::InvalidArgument("empty key");
   }
-
   // Exclusive on this key's shard: serializes the version read/write below and
   // excludes concurrent readers of the same key.
   std::unique_lock<std::shared_mutex> lock(ShardFor(key));
+  return DoPut(key, data, /*explicit_version=*/0);
+}
 
+StatusOr<ObjectMetadata> LocalObjectStore::PutWithVersion(std::string_view key,
+                                                          std::string_view data, uint64_t version) {
+  if (key.empty()) {
+    return Status::InvalidArgument("empty key");
+  }
+  if (version == 0) {
+    return Status::InvalidArgument("explicit version must be non-zero");
+  }
+  std::unique_lock<std::shared_mutex> lock(ShardFor(key));
+  return DoPut(key, data, version);
+}
+
+StatusOr<ObjectMetadata> LocalObjectStore::DoPut(std::string_view key, std::string_view data,
+                                                 uint64_t explicit_version) {
   const std::string digest = KeyDigest(key);
   const fs::path object_path = PhysicalPath(DataRoot(), digest);
 
-  auto cur = metadata_->CurrentVersion(key);
-  if (!cur.ok()) {
-    return cur.status();
+  uint64_t version = explicit_version;
+  if (version == 0) {
+    auto cur = metadata_->CurrentVersion(key);
+    if (!cur.ok()) {
+      return cur.status();
+    }
+    version = cur.value() + 1;
   }
 
   ObjectMetadata meta;
   meta.key = std::string(key);
   meta.size = data.size();
   meta.checksum = Sha256Hex(data);
-  meta.version = cur.value() + 1;
+  meta.version = version;
   meta.created_at = static_cast<int64_t>(::time(nullptr));
   meta.deleted = false;
 

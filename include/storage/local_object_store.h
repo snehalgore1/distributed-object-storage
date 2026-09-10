@@ -33,6 +33,13 @@ public:
   static StatusOr<std::unique_ptr<LocalObjectStore>> Open(const std::filesystem::path& root);
 
   StatusOr<ObjectMetadata> Put(std::string_view key, std::string_view data) override;
+
+  // Writes `data` at an externally-assigned `version` (used by the replication
+  // coordinator so all replicas store the same version). Last-write-wins:
+  // conditional/version-guarded writes arrive in Milestone 5.
+  StatusOr<ObjectMetadata> PutWithVersion(std::string_view key, std::string_view data,
+                                          uint64_t version) override;
+
   StatusOr<std::string> Get(std::string_view key) override;
   StatusOr<ObjectMetadata> Head(std::string_view key) override;
   Status Delete(std::string_view key) override;
@@ -41,6 +48,12 @@ public:
 private:
   LocalObjectStore(std::filesystem::path root, std::unique_ptr<MetadataStore> metadata)
       : root_(std::move(root)), metadata_(std::move(metadata)) {}
+
+  // Shared write path. If `explicit_version` is non-zero it is used verbatim;
+  // otherwise the version is auto-assigned as current + 1. Caller holds the
+  // key's shard lock.
+  StatusOr<ObjectMetadata> DoPut(std::string_view key, std::string_view data,
+                                 uint64_t explicit_version);
 
   std::filesystem::path DataRoot() const { return root_ / "data"; }
   std::filesystem::path TmpDir() const { return root_ / "data" / "tmp"; }

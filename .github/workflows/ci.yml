@@ -15,8 +15,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            cmake ninja-build clang clang-format \
-            libgtest-dev libsqlite3-dev
+            cmake ninja-build clang clang-format pkg-config \
+            libgtest-dev libsqlite3-dev \
+            protobuf-compiler protobuf-compiler-grpc \
+            libprotobuf-dev libgrpc++-dev
 
       - name: Configure
         run: cmake -S . -B build -G Ninja -DDOS_WERROR=ON
@@ -40,7 +42,11 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build clang libgtest-dev libsqlite3-dev
+          sudo apt-get install -y \
+            cmake ninja-build clang pkg-config \
+            libgtest-dev libsqlite3-dev \
+            protobuf-compiler protobuf-compiler-grpc \
+            libprotobuf-dev libgrpc++-dev
 
       - name: Configure (TSan)
         run: cmake -S . -B build-tsan -G Ninja -DDOS_SANITIZER=thread

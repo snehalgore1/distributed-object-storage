@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+package dos.rpc;
+
+// Domain status, mirrors dos::StatusCode. Transport-level failures use the gRPC
+// status; this reports application-level outcomes.
+enum Code {
+  OK = 0;
+  NOT_FOUND = 1;
+  CHECKSUM_MISMATCH = 2;
+  CONFLICT = 3;
+  INVALID_ARGUMENT = 4;
+  ALREADY_EXISTS = 5;
+  IO_ERROR = 6;
+  UNAVAILABLE = 7;
+}
+
+message ObjectMeta {
+  string key = 1;
+  uint64 size = 2;
+  string checksum = 3;  // sha256 hex
+  uint64 version = 4;
+  int64 created_at = 5;
+  bool deleted = 6;
+}
+
+// StorageNode is the per-node data-plane service. Each storage node process
+// exposes it over one gRPC port and serves its local object store. The
+// coordinator is a client of these across the replica set.
+service StorageNode {
+  // Writes the object at an externally-assigned version (the coordinator owns
+  // versioning so replicas agree). The node computes and stores the checksum.
+  rpc Put(PutRequest) returns (PutResponse);
+  rpc Get(GetRequest) returns (GetResponse);
+  rpc Head(HeadRequest) returns (HeadResponse);
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+}
+
+message PutRequest {
+  string key = 1;
+  bytes data = 2;
+  uint64 version = 3;      // assigned by the coordinator
+  string request_id = 4;   // for idempotent retries (used from M5)
+}
+message PutResponse {
+  Code code = 1;
+  string message = 2;
+  ObjectMeta meta = 3;
+}
+
+message GetRequest { string key = 1; }
+message GetResponse {
+  Code code = 1;
+  string message = 2;
+  bytes data = 3;
+  ObjectMeta meta = 4;
+}
+
+message HeadRequest { string key = 1; }
+message HeadResponse {
+  Code code = 1;
+  string message = 2;
+  ObjectMeta meta = 3;
+}
+
+message DeleteRequest {
+  string key = 1;
+  string request_id = 2;
+}
+message DeleteResponse {
+  Code code = 1;
+  string message = 2;
+}

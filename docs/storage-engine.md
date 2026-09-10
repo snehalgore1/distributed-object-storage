@@ -74,11 +74,31 @@ replica.
 from `Get`/`Head` and are excluded from `List`. Physical payload cleanup and
 version-conditional writes are deferred to later milestones (M5).
 
+## Concurrency (Milestone 2)
+
+`LocalObjectStore` is safe for concurrent use. Instead of one global mutex, keys
+are hashed to a fixed set of **striped locks** (`kNumShards` `std::shared_mutex`,
+indexed by `hash(key) % kNumShards`):
+
+- `Put` / `Delete` take the key's shard **exclusively**.
+- `Get` / `Head` take it **shared** (many concurrent readers).
+
+Operations on keys in different shards proceed in parallel. The exclusive lock in
+`Put` is what makes the *read-current-version → write-version+1* sequence atomic,
+so concurrent writers to the same key produce a clean monotonic version sequence
+rather than racing. The SQLite connection is opened with `SQLITE_OPEN_FULLMUTEX`
+(serialized mode) so the shared handle is safe across threads.
+
+Work is executed on a fixed-size [`ThreadPool`](../include/common/thread_pool.h)
+with a **bounded queue**: when the queue is full, `Submit` returns
+`kUnavailable` (backpressure) rather than growing without limit. A task that
+throws is caught and counted; it never tears down its worker.
+
+All concurrency tests run clean under **ThreadSanitizer** (`-DDOS_SANITIZER=thread`).
+
 ## Known limitations (addressed later)
 
 - No WAL for the object payloads yet (spec M7); durability rests on the
   fsync/rename ordering above plus SQLite's WAL for metadata.
-- No concurrency control yet (spec M2): a single `LocalObjectStore` is not yet
-  guarded for concurrent writers to the same key.
 - Overwrites reuse the same physical path (keyed by digest); only the latest
   committed version is retained.

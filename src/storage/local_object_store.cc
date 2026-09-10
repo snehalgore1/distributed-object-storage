@@ -8,6 +8,7 @@
 #include <cstring>
 #include <ctime>
 #include <fstream>
+#include <shared_mutex>
 
 #include "common/digest.h"
 #include "common/sha256.h"
@@ -132,6 +133,10 @@ StatusOr<ObjectMetadata> LocalObjectStore::Put(std::string_view key, std::string
     return Status::InvalidArgument("empty key");
   }
 
+  // Exclusive on this key's shard: serializes the version read/write below and
+  // excludes concurrent readers of the same key.
+  std::unique_lock<std::shared_mutex> lock(ShardFor(key));
+
   const std::string digest = KeyDigest(key);
   const fs::path object_path = PhysicalPath(DataRoot(), digest);
 
@@ -164,6 +169,10 @@ StatusOr<ObjectMetadata> LocalObjectStore::Put(std::string_view key, std::string
 }
 
 StatusOr<std::string> LocalObjectStore::Get(std::string_view key) {
+  // Shared on this key's shard: many readers proceed together; a concurrent
+  // Put/Delete to the same key is excluded.
+  std::shared_lock<std::shared_mutex> lock(ShardFor(key));
+
   auto meta = metadata_->Get(key);
   if (!meta.ok()) {
     return meta.status(); // kNotFound for missing or tombstoned
@@ -184,10 +193,14 @@ StatusOr<std::string> LocalObjectStore::Get(std::string_view key) {
 }
 
 StatusOr<ObjectMetadata> LocalObjectStore::Head(std::string_view key) {
+  std::shared_lock<std::shared_mutex> lock(ShardFor(key));
   return metadata_->Get(key);
 }
 
-Status LocalObjectStore::Delete(std::string_view key) { return metadata_->Delete(key); }
+Status LocalObjectStore::Delete(std::string_view key) {
+  std::unique_lock<std::shared_mutex> lock(ShardFor(key));
+  return metadata_->Delete(key);
+}
 
 StatusOr<std::vector<ObjectMetadata>> LocalObjectStore::List(std::string_view prefix) {
   return metadata_->List(prefix);

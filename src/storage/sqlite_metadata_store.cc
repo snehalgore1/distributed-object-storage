@@ -38,7 +38,12 @@ void BindText(sqlite3_stmt* s, int idx, std::string_view v) {
 StatusOr<std::unique_ptr<SqliteMetadataStore>>
 SqliteMetadataStore::Open(const std::filesystem::path& db_path) {
   sqlite3* db = nullptr;
-  int rc = sqlite3_open(db_path.c_str(), &db);
+  // FULLMUTEX = serialized threading mode: the single connection is safe to use
+  // concurrently from multiple threads (spec Milestone 2). App-level sharded
+  // locks still guard the version read/write sequence per key.
+  int rc =
+      sqlite3_open_v2(db_path.c_str(), &db,
+                      SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr);
   if (rc != SQLITE_OK) {
     std::string msg = db ? sqlite3_errmsg(db) : "unknown";
     sqlite3_close(db);

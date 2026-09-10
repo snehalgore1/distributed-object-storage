@@ -19,9 +19,19 @@ if(DOS_WERROR)
   target_compile_options(dos_warnings INTERFACE -Werror)
 endif()
 
+# --- Sanitizers ---------------------------------------------------------------
+# -DDOS_SANITIZER=thread|address|undefined applies the sanitizer to all targets.
+set(DOS_SANITIZER "" CACHE STRING "Sanitizer: thread, address, or undefined")
+if(DOS_SANITIZER)
+  message(STATUS "Building with sanitizer: ${DOS_SANITIZER}")
+  add_compile_options(-fsanitize=${DOS_SANITIZER} -fno-omit-frame-pointer -g)
+  add_link_options(-fsanitize=${DOS_SANITIZER})
+endif()
+
 # --- Dependencies -------------------------------------------------------------
 find_package(GTest REQUIRED)
 find_package(SQLite3 REQUIRED)
+find_package(Threads REQUIRED)
 
 include(CTest)
 include(GoogleTest)
@@ -31,6 +41,7 @@ add_library(dos_core
   src/common/status.cc
   src/common/sha256.cc
   src/common/digest.cc
+  src/common/thread_pool.cc
   src/storage/sqlite_metadata_store.cc
   src/storage/local_object_store.cc)
 target_include_directories(dos_core
@@ -39,7 +50,7 @@ target_include_directories(dos_core
 # Link SQLite via find_package variables rather than an imported target: the
 # target name differs across CMake versions (SQLite::SQLite3 vs SQLite3::SQLite3),
 # but ${SQLite3_LIBRARIES} is stable.
-target_link_libraries(dos_core PUBLIC ${SQLite3_LIBRARIES} PRIVATE dos_warnings)
+target_link_libraries(dos_core PUBLIC ${SQLite3_LIBRARIES} Threads::Threads PRIVATE dos_warnings)
 
 # --- Demo tool ----------------------------------------------------------------
 add_executable(storage_demo tools/demo/storage_demo.cc)
@@ -50,7 +61,9 @@ if(BUILD_TESTING)
   add_executable(dos_unit_tests
     tests/unit/sha256_test.cc
     tests/unit/digest_test.cc
-    tests/unit/local_object_store_test.cc)
+    tests/unit/local_object_store_test.cc
+    tests/unit/thread_pool_test.cc
+    tests/unit/concurrency_test.cc)
   target_link_libraries(dos_unit_tests PRIVATE dos_core dos_warnings GTest::gtest_main)
   gtest_discover_tests(dos_unit_tests)
 endif()

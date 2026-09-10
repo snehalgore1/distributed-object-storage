@@ -1,8 +1,12 @@
 #ifndef DOS_STORAGE_LOCAL_OBJECT_STORE_H_
 #define DOS_STORAGE_LOCAL_OBJECT_STORE_H_
 
+#include <array>
+#include <cstddef>
 #include <filesystem>
+#include <functional>
 #include <memory>
+#include <shared_mutex>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -41,8 +45,19 @@ private:
   std::filesystem::path DataRoot() const { return root_ / "data"; }
   std::filesystem::path TmpDir() const { return root_ / "data" / "tmp"; }
 
+  // Striped locking (spec Milestone 2): rather than one global mutex around the
+  // whole store, keys are hashed to a fixed set of shards. Operations on keys in
+  // different shards proceed concurrently; Put/Delete take the shard exclusively
+  // while Get/Head share it. This also serializes the read-version/write-version
+  // sequence in Put so concurrent writers to the same key can't collide.
+  static constexpr std::size_t kNumShards = 64;
+  std::shared_mutex& ShardFor(std::string_view key) {
+    return shards_[std::hash<std::string_view>{}(key) % kNumShards];
+  }
+
   std::filesystem::path root_;
   std::unique_ptr<MetadataStore> metadata_;
+  std::array<std::shared_mutex, kNumShards> shards_;
 };
 
 } // namespace dos

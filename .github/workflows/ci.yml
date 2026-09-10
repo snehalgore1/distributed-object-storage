@@ -31,3 +31,27 @@ jobs:
         run: |
           files=$(find src include tests tools -name '*.cc' -o -name '*.h')
           clang-format --dry-run --Werror $files
+
+  thread-sanitizer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build clang libgtest-dev libsqlite3-dev
+
+      - name: Configure (TSan)
+        run: cmake -S . -B build-tsan -G Ninja -DDOS_SANITIZER=thread
+        env:
+          CC: clang
+          CXX: clang++
+
+      - name: Build (TSan)
+        run: cmake --build build-tsan
+
+      - name: Test (TSan)
+        run: ctest --test-dir build-tsan --output-on-failure
+        env:
+          TSAN_OPTIONS: halt_on_error=1

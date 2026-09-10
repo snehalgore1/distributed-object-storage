@@ -4,10 +4,11 @@ A fault-tolerant distributed object storage system in C++20 — built systems-fi
 to demonstrate concurrency, storage durability, distributed coordination, and
 performance engineering.
 
-> **Status:** Milestones 0–1 complete. A correct, tested, single-node storage
-> engine with content checksums, atomic durable writes, versioning, and SQLite
-> metadata. Distributed layers (gRPC, consistent hashing, quorum replication,
-> failure detection, WAL recovery) are on the roadmap below.
+> **Status:** Milestones 0–2 complete. A correct, tested, **concurrent**
+> single-node storage engine with content checksums, atomic durable writes,
+> versioning, SQLite metadata, a bounded-queue thread pool, and sharded locking
+> — ThreadSanitizer-clean. Distributed layers (gRPC, consistent hashing, quorum
+> replication, failure detection, WAL recovery) are on the roadmap below.
 
 ## What works today
 
@@ -19,6 +20,9 @@ performance engineering.
 - **Versioning**: monotonic per-key versions; delete is a tombstone.
 - **Metadata**: SQLite (`objects` table) behind a `MetadataStore` interface, the
   seam for the future control/data-plane split.
+- **Concurrency**: fixed-size `ThreadPool` with a bounded queue (overload →
+  `kUnavailable`, no unbounded growth) and **sharded locking** on the object
+  store (exclusive for writes, shared for reads). ThreadSanitizer-clean.
 
 ## Build & test
 
@@ -31,6 +35,14 @@ brew install cmake ninja googletest sqlite
 cmake -S . -B build -G Ninja -DDOS_WERROR=ON
 cmake --build build
 ctest --test-dir build --output-on-failure
+```
+
+Run under a sanitizer (ThreadSanitizer shown; also `address`, `undefined`):
+
+```sh
+cmake -S . -B build-tsan -G Ninja -DDOS_SANITIZER=thread
+cmake --build build-tsan
+ctest --test-dir build-tsan --output-on-failure
 ```
 
 ### Try it
@@ -71,7 +83,7 @@ docs/     architecture.md, storage-engine.md
 |-----------|-------|
 | ✅ M0 | Build/test foundation (CMake, CI, GoogleTest, clang-format) |
 | ✅ M1 | Single-node storage engine (checksums, atomic writes, versioning) |
-| M2 | Concurrency: thread pool, bounded queue, sharded locks (TSan-clean) |
+| ✅ M2 | Concurrency: thread pool, bounded queue, sharded locks (TSan-clean) |
 | M3 | Cluster membership + consistent hashing (gRPC) |
 | M4 | Replication factor 3 + quorum writes |
 | M5 | Versioning & idempotency (conditional PUT, request IDs) |

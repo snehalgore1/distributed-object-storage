@@ -17,6 +17,7 @@ enum class StatusCode {
   kInvalidArgument,
   kAlreadyExists,
   kIoError,
+  kUnavailable, // overload / backpressure: work rejected, retry later
 };
 
 const char* StatusCodeName(StatusCode code);
@@ -40,6 +41,7 @@ public:
     return {StatusCode::kAlreadyExists, std::move(msg)};
   }
   static Status IoError(std::string msg) { return {StatusCode::kIoError, std::move(msg)}; }
+  static Status Unavailable(std::string msg) { return {StatusCode::kUnavailable, std::move(msg)}; }
 
   bool ok() const { return code_ == StatusCode::kOk; }
   StatusCode code() const { return code_; }

@@ -18,6 +18,8 @@ const char* StatusCodeName(StatusCode code) {
     return "ALREADY_EXISTS";
   case StatusCode::kIoError:
     return "IO_ERROR";
+  case StatusCode::kUnavailable:
+    return "UNAVAILABLE";
   }
   return "UNKNOWN";
 }

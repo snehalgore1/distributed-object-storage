@@ -48,6 +48,10 @@ public:
   StatusOr<std::string> Get(const std::string& key);
   Status Delete(const std::string& key);
 
+  // Metadata-only lookups (control plane; no payload transfer).
+  StatusOr<ObjectMetadata> Head(const std::string& key);
+  StatusOr<std::vector<ObjectMetadata>> List(const std::string& prefix);
+
   std::map<std::string, ReplicaHealth> ReplicaHealthSnapshot() const;
 
 private:

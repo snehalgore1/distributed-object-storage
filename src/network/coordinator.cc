@@ -221,6 +221,38 @@ Status Coordinator::Delete(const std::string& key) {
   return metadata_->RemoveObject(key);
 }
 
+StatusOr<ObjectMetadata> Coordinator::Head(const std::string& key) {
+  auto loc = metadata_->LookupObject(key);
+  if (!loc.ok()) {
+    return loc.status();
+  }
+  ObjectMetadata meta;
+  meta.key = loc.value().key;
+  meta.size = loc.value().size;
+  meta.checksum = loc.value().checksum;
+  meta.version = loc.value().version;
+  meta.deleted = loc.value().deleted;
+  return meta;
+}
+
+StatusOr<std::vector<ObjectMetadata>> Coordinator::List(const std::string& prefix) {
+  auto objs = metadata_->ListObjects(prefix);
+  if (!objs.ok()) {
+    return objs.status();
+  }
+  std::vector<ObjectMetadata> out;
+  out.reserve(objs.value().size());
+  for (const auto& loc : objs.value()) {
+    ObjectMetadata meta;
+    meta.key = loc.key;
+    meta.size = loc.size;
+    meta.checksum = loc.checksum;
+    meta.version = loc.version;
+    out.push_back(std::move(meta));
+  }
+  return out;
+}
+
 std::map<std::string, ReplicaHealth> Coordinator::ReplicaHealthSnapshot() const {
   std::lock_guard<std::mutex> lock(health_mu_);
   return health_;

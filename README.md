@@ -12,10 +12,11 @@ performance engineering.
 > (`expected_version` → `CONFLICT`, `request_id` dedup), **failure detection +
 > anti-entropy repair** (heartbeat state machine; a rejoining node is repaired
 > back to full redundancy), and a **write-ahead log with crash recovery**
-> (interrupted writes are completed or discarded on restart), and a **metadata /
+> (interrupted writes are completed or discarded on restart), a **metadata /
 > control-plane split** (placement and the object→replica map live behind a
-> `Metadata` gRPC service; payloads never touch it). Extended layers
-> (cache/HTTP gateway, observability, Docker/K8s) are next.
+> `Metadata` gRPC service; payloads never touch it), and an **HTTP gateway + CLI
+> + LRU metadata cache** — the whole cluster is usable over `curl`. Remaining
+> layers (observability, Docker/K8s) are next.
 
 ## See it fail over
 
@@ -98,6 +99,10 @@ write-ahead log + SHA-256 integrity. See [docs/architecture.md](docs/architectur
   to storage nodes under a quorum, and registers the replica set back — **object
   payloads never pass through the metadata service** (its records carry version,
   checksum, size, and replica ids only).
+- **HTTP gateway, CLI & cache**: a thin HTTP/1.1 gateway (`dos_gateway`) exposes
+  `PUT/GET/HEAD/DELETE/LIST` over `/objects/<key>` — usable from `dos_cli` or
+  plain `curl` — with gRPC-`Status`→HTTP-code mapping. Reads flow through an O(1)
+  **LRU metadata cache** kept coherent on writes.
 
 ## Build & test
 
@@ -153,6 +158,16 @@ checksum-verified fallback (see [docs/protocol.md](docs/protocol.md)); the
 end-to-end quorum and failover behavior is exercised in
 `tests/integration/replication_test.cc`.
 
+Or drive the whole stack over HTTP — start the metadata service, nodes, and
+gateway (see [docs/gateway.md](docs/gateway.md)), then:
+
+```sh
+curl -X PUT --data-binary "hello" http://127.0.0.1:8080/objects/greeting
+curl http://127.0.0.1:8080/objects/greeting        # -> hello
+curl http://127.0.0.1:8080/objects                 # -> JSON listing
+./build/dos_cli --gateway 127.0.0.1:8080 delete greeting
+```
+
 ## Benchmarks
 
 > Reproduced on an **Apple M1 Pro (8 cores), 16 GB, macOS 26** with the exact
@@ -195,15 +210,16 @@ clear optimization targets (batch/group-commit; a hardware-accelerated hash).
 
 ```
 proto/    storage.proto (StorageNode) · metadata.proto (Metadata control plane)
-include/  common/ (status, sha256, hash, digest, thread_pool)
+include/  common/ (status, sha256, hash, digest, thread_pool, lru_cache)
           cluster/ (consistent_hash_ring, cluster_map, failure_detector,
-                    metadata_view, metadata_repository)
+                    metadata_view, metadata_repository, caching_metadata_view)
           storage/ (object_store, local_object_store, sqlite_metadata_store, wal)
-          network/ (storage_node_*, metadata_server/client, coordinator, repairer)
+          network/ (storage_node_*, metadata_*, coordinator, repairer,
+                    http_server/client, http_gateway)
 src/      implementations mirroring include/
-tests/    unit/ (GoogleTest) · integration/ (in-process gRPC cluster + metadata)
-tools/    demo/ (storage_demo, cluster_demo) · node/ (dos_node) · metadata/ (dos_metadata)
-          bench/ (micro_bench) · clusterbench/ (rebalance_bench)
+tests/    unit/ (GoogleTest) · integration/ (in-process gRPC cluster + gateway)
+tools/    demo/ · node/ (dos_node) · metadata/ (dos_metadata)
+          gateway/ (dos_gateway) · cli/ (dos_cli) · bench/ · clusterbench/
 docs/     architecture, storage-engine, consistency, protocol, failure-model
 ```
 
@@ -218,6 +234,8 @@ docs/     architecture, storage-engine, consistency, protocol, failure-model
   & idempotent writes, consistency model.
 - [Failure model](docs/failure-model.md) — heartbeat detection and anti-entropy
   repair.
+- [Gateway, CLI & cache](docs/gateway.md) — HTTP API, `dos_cli`, LRU metadata
+  cache.
 
 ## Roadmap
 
@@ -232,7 +250,7 @@ docs/     architecture, storage-engine, consistency, protocol, failure-model
 | ✅ M6 | Failure detection (heartbeat FSM) + anti-entropy replica repair |
 | ✅ M7 | Write-ahead log + crash recovery (interrupted writes completed/discarded) |
 | ✅ M8 | Metadata / control-plane split (placement + object→replica map behind a gRPC service) |
-| M9 | LRU cache + HTTP gateway + CLI |
+| ✅ M9 | HTTP gateway + CLI + O(1) LRU metadata cache |
 | M10 | Observability (Prometheus + Grafana, structured logs) |
 | M11 | Docker Compose |
 | M12 | Kubernetes (kind) |

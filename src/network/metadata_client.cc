@@ -44,6 +44,25 @@ Status RemoteMetadataView::AddNode(const std::string& id, const std::string& add
   return Status(FromProtoCode(resp.code()), resp.message());
 }
 
+StatusOr<std::vector<NodeInfo>> RemoteMetadataView::ListNodes() {
+  rpc::NodesRequest req;
+  rpc::ListNodesResponse resp;
+  grpc::ClientContext ctx;
+  SetDeadline(ctx);
+  grpc::Status s = stub_->ListNodes(&ctx, req, &resp);
+  if (!s.ok()) {
+    return Status::Unavailable("ListNodes RPC failed: " + s.error_message());
+  }
+  std::vector<NodeInfo> out;
+  for (const auto& n : resp.nodes()) {
+    NodeInfo info;
+    info.id = n.id();
+    info.address = n.address();
+    out.push_back(info);
+  }
+  return out;
+}
+
 std::vector<std::string> RemoteMetadataView::PlacementFor(std::string_view key, std::size_t rf) {
   rpc::PlacementRequest req;
   req.set_key(std::string(key));

@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "cluster/metadata_view.h"
+#include "cluster/node_info.h"
 #include "metadata.grpc.pb.h"
 
 namespace dos {
@@ -21,8 +22,9 @@ public:
   explicit RemoteMetadataView(const std::string& address,
                               std::chrono::milliseconds deadline = std::chrono::milliseconds(500));
 
-  // Membership admin (not part of MetadataView; used to configure the cluster).
+  // Membership admin / discovery (not part of MetadataView).
   Status AddNode(const std::string& id, const std::string& address);
+  StatusOr<std::vector<NodeInfo>> ListNodes();
 
   std::vector<std::string> PlacementFor(std::string_view key, std::size_t rf) override;
   Status RegisterObject(const ObjectLocation& loc) override;

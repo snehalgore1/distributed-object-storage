@@ -102,7 +102,10 @@ add_library(dos_rpc
   src/network/coordinator.cc
   src/network/repairer.cc
   src/network/metadata_server.cc
-  src/network/metadata_client.cc)
+  src/network/metadata_client.cc
+  src/network/http_server.cc
+  src/network/http_client.cc
+  src/network/http_gateway.cc)
 target_include_directories(dos_rpc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(dos_rpc PUBLIC dos_core dos_proto PRIVATE dos_warnings)
 
@@ -118,6 +121,12 @@ target_link_libraries(dos_node PRIVATE dos_rpc dos_warnings)
 
 add_executable(dos_metadata tools/metadata/metadata_main.cc)
 target_link_libraries(dos_metadata PRIVATE dos_rpc dos_warnings)
+
+add_executable(dos_gateway tools/gateway/gateway_main.cc)
+target_link_libraries(dos_gateway PRIVATE dos_rpc dos_warnings)
+
+add_executable(dos_cli tools/cli/cli_main.cc)
+target_link_libraries(dos_cli PRIVATE dos_rpc dos_warnings)
 
 add_executable(micro_bench tools/bench/micro_bench.cc)
 target_link_libraries(micro_bench PRIVATE dos_core dos_warnings)
@@ -140,13 +149,16 @@ if(BUILD_TESTING)
     tests/unit/failure_detector_test.cc
     tests/unit/wal_test.cc
     tests/unit/crash_recovery_test.cc
-    tests/unit/metadata_repository_test.cc)
+    tests/unit/metadata_repository_test.cc
+    tests/unit/lru_cache_test.cc
+    tests/unit/caching_metadata_view_test.cc)
   target_link_libraries(dos_unit_tests PRIVATE dos_core dos_warnings GTest::gtest_main)
   gtest_discover_tests(dos_unit_tests)
 
   add_executable(dos_integration_tests
     tests/integration/replication_test.cc
-    tests/integration/metadata_split_test.cc)
+    tests/integration/metadata_split_test.cc
+    tests/integration/http_gateway_test.cc)
   target_link_libraries(dos_integration_tests PRIVATE dos_rpc dos_warnings GTest::gtest_main)
   gtest_discover_tests(dos_integration_tests)
 endif()

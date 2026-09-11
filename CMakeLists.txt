@@ -111,6 +111,12 @@ target_link_libraries(rebalance_bench PRIVATE dos_core dos_warnings)
 add_executable(dos_node tools/node/node_main.cc)
 target_link_libraries(dos_node PRIVATE dos_rpc dos_warnings)
 
+add_executable(micro_bench tools/bench/micro_bench.cc)
+target_link_libraries(micro_bench PRIVATE dos_core dos_warnings)
+
+add_executable(cluster_demo tools/demo/cluster_demo.cc)
+target_link_libraries(cluster_demo PRIVATE dos_rpc dos_warnings)
+
 # --- Unit tests ---------------------------------------------------------------
 if(BUILD_TESTING)
   add_executable(dos_unit_tests

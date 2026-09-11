@@ -15,6 +15,47 @@ performance engineering.
 > (interrupted writes are completed or discarded on restart). Extended layers
 > (metadata-service split, cache/HTTP gateway, observability, Docker/K8s) are next.
 
+## See it fail over
+
+A client `PUT`, a node killed mid-flight, a `GET` that still succeeds from a
+surviving replica, then anti-entropy repair restoring full redundancy on rejoin
+— end to end (`./build/cluster_demo`):
+
+![Failover demo: kill a node, reads survive, repair restores redundancy](docs/failover-demo.gif)
+
+## Architecture
+
+Control plane (placement/metadata) is kept separate from the data plane (object
+bytes): metadata answers *"where and which version?"*, storage nodes answer
+*"give me the bytes."*
+
+```mermaid
+flowchart TB
+    client([Client])
+    coord["Coordinator<br/>RF=3 placement · W=2 write quorum<br/>checksum-verified read fallback"]
+    ring["ClusterMap + consistent-hash ring<br/>virtual nodes · replica selection"]
+    fd["FailureDetector<br/>heartbeat state machine"]
+    rep["Repairer<br/>anti-entropy"]
+
+    subgraph cluster [Storage nodes · RF=3]
+      direction LR
+      A["node-a<br/>store + WAL + checksums"]
+      B["node-b<br/>store + WAL + checksums"]
+      C["node-c<br/>store + WAL + checksums"]
+    end
+
+    client --> coord
+    coord -->|"look up replica set"| ring
+    coord -->|"Put / Get / Delete (gRPC)"| A
+    coord --> B
+    coord --> C
+    fd -.->|"Health probes"| A & B & C
+    rep -.->|"reconcile on rejoin"| C
+```
+
+Each node: filesystem object store + per-key sharded locks + SQLite metadata +
+write-ahead log + SHA-256 integrity. See [docs/architecture.md](docs/architecture.md).
+
 ## What works today
 
 - **`ObjectStore`** contract: `PUT` / `GET` / `HEAD` / `DELETE` / `LIST`.
@@ -88,16 +129,8 @@ DELETE then GET -> NOT_FOUND: tombstoned: greeting/hello.txt (expected NOT_FOUND
 OK
 ```
 
-Consistent-hashing rebalancing benchmark (modulo vs. consistent, 3→4 nodes):
-
-```sh
-./build/rebalance_bench            # ./build/rebalance_bench [num_keys] [vnodes]
-```
-
-```
-Distribution across 3 nodes:  node-a 32.30%  node-b 33.46%  node-c 34.24%
-Adding a 4th node moves:      consistent 25.25%    modulo 74.99%   (~3x fewer)
-```
+See [Benchmarks](#benchmarks) below for the rebalancing and throughput numbers
+(`./build/rebalance_bench`, `./build/micro_bench`).
 
 Run a three-node cluster as separate processes:
 
@@ -112,14 +145,57 @@ checksum-verified fallback (see [docs/protocol.md](docs/protocol.md)); the
 end-to-end quorum and failover behavior is exercised in
 `tests/integration/replication_test.cc`.
 
+## Benchmarks
+
+> Reproduced on an **Apple M1 Pro (8 cores), 16 GB, macOS 26** with the exact
+> commands shown. Numbers are illustrative of this machine; rerun locally rather
+> than quoting these verbatim. (The evidence rule: no number goes in a résumé
+> until it's reproducible from a documented command with stated hardware.)
+
+**Consistent-hash rebalancing** — growing the cluster 3 → 4 nodes
+(`./build/rebalance_bench`, 100k keys, 200 vnodes):
+
+| Scheme | Distribution across 3 nodes | Keys moved adding a 4th |
+|--------|-----------------------------|-------------------------|
+| Consistent hashing | 32.3% / 33.5% / 34.2% | **25.25%** (≈ ideal 1/N) |
+| Modulo `hash % N`  | — | 74.99% |
+
+→ consistent hashing moves **~3× fewer keys**, and every moved key goes *only*
+to the new node (asserted in tests).
+
+**Single-node throughput & latency** — durable (fsync'd) writes, single thread,
+warm cache (`./build/micro_bench 500`):
+
+| Object size | Op  | ops/s | MB/s | p50 | p95 | p99 |
+|-------------|-----|------:|-----:|----:|----:|----:|
+| 4 KB   | PUT | 1,136 |  4.4 |  0.72 ms |  0.90 ms |  1.21 ms |
+| 4 KB   | GET | 6,139 | 24.0 |  0.16 ms |  0.18 ms |  0.21 ms |
+| 64 KB  | PUT |   580 | 36.3 |  1.60 ms |  2.03 ms |  2.38 ms |
+| 64 KB  | GET |   754 | 47.1 |  1.28 ms |  1.51 ms |  1.60 ms |
+| 1 MB   | PUT |    85 | 85.1 | 11.9 ms  | 14.0 ms  | 14.5 ms  |
+| 1 MB   | GET |    54 | 54.3 | 17.1 ms  | 23.4 ms  | 28.2 ms  |
+
+**Bottleneck identified:** for small objects PUT latency is dominated by the
+durability path (WAL `fsync` + object `fsync` + directory `fsync`). For large
+objects, *GET* becomes the slower op because every read **re-verifies the
+SHA-256 checksum** over the whole payload, and the checksum is a portable,
+unoptimized reference implementation — hashing, not I/O, dominates 1 MB reads.
+Both are deliberate correctness costs (durability, integrity), and both are
+clear optimization targets (batch/group-commit; a hardware-accelerated hash).
+
 ## Layout
 
 ```
-include/  common/ (status, sha256, digest)  storage/ (interfaces + impls)
-src/      implementations
-tests/    unit/ (GoogleTest)
-tools/    demo/ (storage_demo smoke tool)
-docs/     architecture.md, storage-engine.md
+proto/    storage.proto (gRPC StorageNode service)
+include/  common/ (status, sha256, hash, digest, thread_pool)
+          cluster/ (consistent_hash_ring, cluster_map, failure_detector)
+          storage/ (object_store, local_object_store, sqlite_metadata_store, wal)
+          network/ (storage_node_server/client, coordinator, repairer)
+src/      implementations mirroring include/
+tests/    unit/ (GoogleTest) · integration/ (in-process gRPC cluster)
+tools/    demo/ (storage_demo, cluster_demo) · node/ (dos_node)
+          bench/ (micro_bench) · clusterbench/ (rebalance_bench)
+docs/     architecture, storage-engine, consistency, protocol, failure-model
 ```
 
 ## Documentation

@@ -4,15 +4,16 @@ A fault-tolerant distributed object storage system in C++20 — built systems-fi
 to demonstrate concurrency, storage durability, distributed coordination, and
 performance engineering.
 
-> **Status:** Milestones 0–6 complete. A concurrent single-node storage engine
-> (checksums, atomic durable writes, versioning, SQLite metadata, bounded-queue
-> thread pool, sharded locking — TSan-clean), a consistent-hash **placement**
-> layer, **replication over gRPC** (RF=3 / W=2 quorum, checksum-verified read
-> fallback), **conditional, idempotent writes** (`expected_version` → `CONFLICT`,
-> `request_id` dedup), and **failure detection + anti-entropy repair**
-> (heartbeat state machine; a rejoining node is repaired back to full redundancy).
-> Remaining layers (WAL recovery, metadata-service split, observability,
-> deployment) are on the roadmap.
+> **Status:** Milestones 0–7 complete — the CORE tier. A concurrent single-node
+> storage engine (checksums, atomic durable writes, versioning, SQLite metadata,
+> bounded-queue thread pool, sharded locking — TSan-clean), a consistent-hash
+> **placement** layer, **replication over gRPC** (RF=3 / W=2 quorum,
+> checksum-verified read fallback), **conditional, idempotent writes**
+> (`expected_version` → `CONFLICT`, `request_id` dedup), **failure detection +
+> anti-entropy repair** (heartbeat state machine; a rejoining node is repaired
+> back to full redundancy), and a **write-ahead log with crash recovery**
+> (interrupted writes are completed or discarded on restart). Extended layers
+> (metadata-service split, cache/HTTP gateway, observability, Docker/K8s) are next.
 
 ## What works today
 
@@ -44,6 +45,10 @@ performance engineering.
   threshold so transient blips don't declare a node dead) and a `Repairer` that
   reconciles a rejoining node from healthy peers — checksum-verified — back to
   full redundancy.
+- **Write-ahead log + crash recovery**: every mutation is logged (CRC32-checked,
+  fsync'd) before it becomes visible; on restart, interrupted writes are
+  completed (if the payload is durable and intact) or discarded — idempotently.
+  A torn WAL tail is detected and ignored.
 
 ## Build & test
 
@@ -140,7 +145,7 @@ docs/     architecture.md, storage-engine.md
 | ✅ M4 | Replication over gRPC: RF=3, W=2 quorum, checksum-verified read fallback |
 | ✅ M5 | Versioning & idempotency (conditional PUT → CONFLICT, request-id dedup) |
 | ✅ M6 | Failure detection (heartbeat FSM) + anti-entropy replica repair |
-| M7 | Write-ahead log + crash recovery |
+| ✅ M7 | Write-ahead log + crash recovery (interrupted writes completed/discarded) |
 | M8 | Metadata service / control-plane split |
 | M9 | LRU cache + HTTP gateway + CLI |
 | M10 | Observability (Prometheus + Grafana, structured logs) |

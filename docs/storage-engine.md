@@ -42,24 +42,52 @@ SQLite runs in WAL journal mode so metadata commits are crash-safe.
 `LocalObjectStore::Put` performs, in order:
 
 1. Reject empty keys.
-2. Compute `sha256(payload)` and assign `version = current + 1`.
-3. Write the payload to a unique file in `data/tmp/`.
-4. `fsync` the temp file.
-5. Atomically `rename` the temp file to its final `<aa>/<bb>/<digest>` path.
-6. `fsync` the parent directory so the rename itself is durable.
-7. Commit the metadata row (WAL).
+2. Compute `sha256(payload)` and assign the version.
+3. **Append a WAL `BEGIN` record** (seq, op, key, version, checksum, size) and
+   `fsync` it — the intent is durable before any visible change.
+4. Write the payload to a unique file in `data/tmp/`.
+5. `fsync` the temp file.
+6. Atomically `rename` the temp file to its final `<aa>/<bb>/<digest>` path.
+7. `fsync` the parent directory so the rename itself is durable.
+8. Commit the metadata row (SQLite, WAL-journaled) — the visibility point.
+9. **Append a WAL `COMMIT` record** marking the operation complete.
 
 **Crash behavior at each boundary** — what an interviewer can ask about:
 
-| Crash point                        | Result                                                        |
-|------------------------------------|---------------------------------------------------------------|
-| Before step 5 (rename)             | Only an orphan temp file exists; object is invisible. Safe.   |
-| After rename, before metadata (7)  | Payload exists on disk but no committed metadata → invisible; overwritten by the next successful PUT to the key. Safe. |
-| After metadata commit              | Fully committed; survives restart.                            |
+| Crash point                          | Result                                                                              |
+|--------------------------------------|-------------------------------------------------------------------------------------|
+| Before the WAL `BEGIN` (step 3)      | Nothing happened; object never existed. Safe.                                        |
+| After `BEGIN`, before rename (6)     | Recovery sees `BEGIN` with no committed metadata and no intact payload → **discards** it. Safe. |
+| After rename, before metadata (8)    | Recovery sees `BEGIN` + durable payload whose checksum matches → **completes the commit**. Safe. |
+| After metadata commit (8)            | Fully committed; the (possibly missing) `COMMIT` record is irrelevant — recovery sees the effect is already present. Survives restart. |
 
 The key invariant: **a partially written object is never observable as a
 committed version.** The metadata commit is the single point that makes a
-version visible.
+version visible; the WAL makes the crash window between "bytes durable" and
+"metadata committed" explicitly recoverable.
+
+## Write-ahead log & crash recovery (Milestone 7)
+
+The WAL (`wal/node.wal`, see [`Wal`](../include/storage/wal.h)) is an append-only
+log of length-prefixed, **CRC32-checked** records, `fsync`'d on every append. A
+crash mid-append leaves a torn tail, which replay detects (bad length or CRC) and
+ignores.
+
+On `LocalObjectStore::Open`, recovery:
+
+1. Replays the WAL and notes which sequences reached `COMMIT`.
+2. For each `BEGIN` **without** a `COMMIT` (an interrupted operation):
+   - **PUT** — if the metadata is already at/after this version, it's done; else
+     if the payload is on disk and its **checksum matches** the WAL record,
+     complete the commit by writing metadata; otherwise discard it.
+   - **DELETE** — apply the tombstone if the key still exists.
+3. Removes orphaned files from `data/tmp/`.
+4. **Checkpoints** by truncating the WAL — metadata is now the source of truth.
+
+Recovery is **idempotent**: it only ever writes the exact committed metadata a
+completed operation would have, so running it twice yields the same state. A
+crash after local commit but before replication leaves a fully committed local
+object that the replica-repair path (Milestone 6) reconciles across the cluster.
 
 ## Integrity on read
 

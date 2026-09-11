@@ -14,6 +14,7 @@
 #include "common/status.h"
 #include "storage/metadata_store.h"
 #include "storage/object_store.h"
+#include "storage/wal.h"
 
 namespace dos {
 
@@ -50,8 +51,14 @@ public:
   StatusOr<std::vector<ObjectMetadata>> List(std::string_view prefix) override;
 
 private:
-  LocalObjectStore(std::filesystem::path root, std::unique_ptr<MetadataStore> metadata)
-      : root_(std::move(root)), metadata_(std::move(metadata)) {}
+  LocalObjectStore(std::filesystem::path root, std::unique_ptr<MetadataStore> metadata,
+                   std::unique_ptr<Wal> wal)
+      : root_(std::move(root)), metadata_(std::move(metadata)), wal_(std::move(wal)) {}
+
+  // Replays the WAL on startup: completes operations whose payload is durably on
+  // disk but whose metadata commit was lost, discards genuinely incomplete ones,
+  // and removes orphaned temp files. Idempotent.
+  Status Recover(const std::vector<WalRecord>& records);
 
   // Shared write path; caller holds the key's shard lock. Version selection:
   //   explicit_version != 0  -> use it verbatim (coordinator-assigned);
@@ -80,6 +87,7 @@ private:
 
   std::filesystem::path root_;
   std::unique_ptr<MetadataStore> metadata_;
+  std::unique_ptr<Wal> wal_;
   std::array<std::shared_mutex, kNumShards> shards_;
 };
 

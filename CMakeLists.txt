@@ -82,6 +82,7 @@ add_library(dos_core
   src/cluster/cluster_map.cc
   src/cluster/failure_detector.cc
   src/storage/sqlite_metadata_store.cc
+  src/storage/wal.cc
   src/storage/local_object_store.cc)
 target_include_directories(dos_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -122,7 +123,9 @@ if(BUILD_TESTING)
     tests/unit/consistent_hash_ring_test.cc
     tests/unit/cluster_map_test.cc
     tests/unit/versioning_test.cc
-    tests/unit/failure_detector_test.cc)
+    tests/unit/failure_detector_test.cc
+    tests/unit/wal_test.cc
+    tests/unit/crash_recovery_test.cc)
   target_link_libraries(dos_unit_tests PRIVATE dos_core dos_warnings GTest::gtest_main)
   gtest_discover_tests(dos_unit_tests)
 

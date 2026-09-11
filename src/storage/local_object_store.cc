@@ -9,6 +9,7 @@
 #include <ctime>
 #include <fstream>
 #include <mutex>
+#include <set>
 #include <shared_mutex>
 
 #include "common/digest.h"
@@ -126,7 +127,86 @@ StatusOr<std::unique_ptr<LocalObjectStore>> LocalObjectStore::Open(const fs::pat
   if (!meta.ok()) {
     return meta.status();
   }
-  return std::unique_ptr<LocalObjectStore>(new LocalObjectStore(root, std::move(meta).value()));
+
+  // Read whatever the WAL holds from a prior run before opening it for appends.
+  const fs::path wal_path = root / "wal" / "node.wal";
+  auto records = Wal::Replay(wal_path);
+  if (!records.ok()) {
+    return records.status();
+  }
+  auto wal = Wal::Open(wal_path);
+  if (!wal.ok()) {
+    return wal.status();
+  }
+
+  auto store = std::unique_ptr<LocalObjectStore>(
+      new LocalObjectStore(root, std::move(meta).value(), std::move(wal).value()));
+
+  Status r = store->Recover(records.value());
+  if (!r.ok()) {
+    return r;
+  }
+  return store;
+}
+
+Status LocalObjectStore::Recover(const std::vector<WalRecord>& records) {
+  // A committed sequence means the metadata write already landed durably.
+  std::set<uint64_t> committed;
+  for (const auto& rec : records) {
+    if (rec.is_commit) {
+      committed.insert(rec.seq);
+    }
+  }
+
+  for (const auto& rec : records) {
+    if (rec.is_commit || committed.count(rec.seq) != 0) {
+      continue; // completed operations are already reflected in metadata
+    }
+    // An incomplete operation: finish it if its effect is durably present,
+    // otherwise discard it (it never became a committed version).
+    auto peek = metadata_->Peek(rec.key);
+    const uint64_t current = peek.ok() ? peek.value().version : 0;
+
+    if (rec.op == WalOp::kPut) {
+      if (peek.ok() && current >= rec.version) {
+        continue; // metadata already at/after this version
+      }
+      auto data = ReadWholeFile(PhysicalPath(DataRoot(), KeyDigest(rec.key)));
+      if (data.ok() && Sha256Hex(data.value()) == rec.checksum) {
+        // Bytes are durably on disk and intact -> complete the commit.
+        ObjectMetadata meta;
+        meta.key = rec.key;
+        meta.size = rec.size;
+        meta.checksum = rec.checksum;
+        meta.version = rec.version;
+        meta.created_at = static_cast<int64_t>(::time(nullptr));
+        meta.deleted = false;
+        Status c = metadata_->Put(meta);
+        if (!c.ok()) {
+          return c;
+        }
+      }
+      // else: payload missing/torn -> object never committed; leave it out.
+    } else { // kDelete
+      if (peek.ok() && !peek.value().deleted) {
+        Status d = metadata_->Delete(rec.key);
+        if (!d.ok() && d.code() != StatusCode::kNotFound) {
+          return d;
+        }
+      }
+    }
+  }
+
+  // Remove orphaned staging files from interrupted writes.
+  std::error_code ec;
+  if (fs::exists(TmpDir())) {
+    for (const auto& entry : fs::directory_iterator(TmpDir(), ec)) {
+      fs::remove(entry.path(), ec);
+    }
+  }
+
+  // Checkpoint: metadata is now the source of truth, so the WAL can be reset.
+  return wal_->Truncate();
 }
 
 StatusOr<ObjectMetadata> LocalObjectStore::Put(std::string_view key, std::string_view data) {
@@ -210,18 +290,31 @@ StatusOr<ObjectMetadata> LocalObjectStore::DoPut(std::string_view key, std::stri
   meta.deleted = false;
   meta.request_id = std::string(request_id);
 
-  // Stage + durably place the payload BEFORE committing metadata. If we crash
-  // before the metadata Put, the object is invisible and gets overwritten on
-  // the next successful write to this key.
+  // 1) Log write intent to the WAL before any visible change (spec Milestone 7).
+  const uint64_t seq = wal_->NextSeq();
+  Status wb = wal_->AppendBegin(seq, WalOp::kPut, key, version, meta.checksum, meta.size);
+  if (!wb.ok()) {
+    return wb;
+  }
+
+  // 2) Stage + durably place the payload BEFORE committing metadata. A crash
+  //    before the metadata Put leaves an orphan file; recovery completes the
+  //    commit (bytes intact) or discards it (bytes missing/torn).
   Status w = WriteFileAtomic(TmpDir(), object_path, data);
   if (!w.ok()) {
     return w;
   }
 
+  // 3) Commit metadata (the atomic visibility point).
   Status c = metadata_->Put(meta);
   if (!c.ok()) {
     return c;
   }
+
+  // 4) Mark the WAL record complete. The object is already durable, so a failure
+  //    here is non-fatal: recovery would see a begin-without-commit whose effect
+  //    is already present and treat it as applied.
+  wal_->AppendCommit(seq);
   return meta;
 }
 
@@ -256,7 +349,17 @@ StatusOr<ObjectMetadata> LocalObjectStore::Head(std::string_view key) {
 
 Status LocalObjectStore::Delete(std::string_view key) {
   std::unique_lock<std::shared_mutex> lock(ShardFor(key));
-  return metadata_->Delete(key);
+  const uint64_t seq = wal_->NextSeq();
+  Status wb = wal_->AppendBegin(seq, WalOp::kDelete, key, 0, "", 0);
+  if (!wb.ok()) {
+    return wb;
+  }
+  Status s = metadata_->Delete(key);
+  if (!s.ok()) {
+    return s; // e.g. NotFound; recovery no-ops the begin-without-commit
+  }
+  wal_->AppendCommit(seq);
+  return s;
 }
 
 StatusOr<std::vector<ObjectMetadata>> LocalObjectStore::List(std::string_view prefix) {

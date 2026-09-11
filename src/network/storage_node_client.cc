@@ -87,6 +87,42 @@ StatusOr<ObjectMetadata> StorageNodeClient::Head(const std::string& key) {
   return FromProtoMeta(resp.meta());
 }
 
+StatusOr<uint64_t> StorageNodeClient::Health() {
+  rpc::HealthRequest req;
+  rpc::HealthResponse resp;
+  grpc::ClientContext ctx;
+  SetDeadline(ctx);
+  grpc::Status s = stub_->Health(&ctx, req, &resp);
+  if (!s.ok()) {
+    return Status::Unavailable("Health RPC to " + address_ + " failed: " + s.error_message());
+  }
+  if (resp.code() != rpc::OK) {
+    return Status(FromProtoCode(resp.code()), "unhealthy");
+  }
+  return resp.object_count();
+}
+
+StatusOr<std::vector<ObjectMetadata>> StorageNodeClient::List(const std::string& prefix) {
+  rpc::ListRequest req;
+  req.set_prefix(prefix);
+  rpc::ListResponse resp;
+  grpc::ClientContext ctx;
+  SetDeadline(ctx);
+  grpc::Status s = stub_->List(&ctx, req, &resp);
+  if (!s.ok()) {
+    return Status::Unavailable("List RPC to " + address_ + " failed: " + s.error_message());
+  }
+  if (resp.code() != rpc::OK) {
+    return Status(FromProtoCode(resp.code()), resp.message());
+  }
+  std::vector<ObjectMetadata> out;
+  out.reserve(static_cast<std::size_t>(resp.objects_size()));
+  for (const auto& m : resp.objects()) {
+    out.push_back(FromProtoMeta(m));
+  }
+  return out;
+}
+
 Status StorageNodeClient::Delete(const std::string& key) {
   rpc::DeleteRequest req;
   req.set_key(key);

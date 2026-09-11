@@ -34,6 +34,12 @@ service StorageNode {
   rpc Get(GetRequest) returns (GetResponse);
   rpc Head(HeadRequest) returns (HeadResponse);
   rpc Delete(DeleteRequest) returns (DeleteResponse);
+
+  // Liveness probe: answered only if the node's store is responsive (not a mere
+  // TCP check). Used by the failure detector's heartbeats.
+  rpc Health(HealthRequest) returns (HealthResponse);
+  // Enumerates objects (for anti-entropy repair).
+  rpc List(ListRequest) returns (ListResponse);
 }
 
 message PutRequest {
@@ -72,4 +78,17 @@ message DeleteRequest {
 message DeleteResponse {
   Code code = 1;
   string message = 2;
+}
+
+message HealthRequest {}
+message HealthResponse {
+  Code code = 1;
+  uint64 object_count = 2;  // live (non-tombstoned) objects the node holds
+}
+
+message ListRequest { string prefix = 1; }
+message ListResponse {
+  Code code = 1;
+  string message = 2;
+  repeated ObjectMeta objects = 3;
 }

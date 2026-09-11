@@ -21,6 +21,9 @@ public:
   grpc::Status Head(grpc::ServerContext*, const rpc::HeadRequest*, rpc::HeadResponse*) override;
   grpc::Status Delete(grpc::ServerContext*, const rpc::DeleteRequest*,
                       rpc::DeleteResponse*) override;
+  grpc::Status Health(grpc::ServerContext*, const rpc::HealthRequest*,
+                      rpc::HealthResponse*) override;
+  grpc::Status List(grpc::ServerContext*, const rpc::ListRequest*, rpc::ListResponse*) override;
 
 private:
   ObjectStore& store_;

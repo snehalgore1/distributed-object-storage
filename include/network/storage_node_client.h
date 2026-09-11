@@ -6,6 +6,7 @@
 #include <chrono>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "common/status.h"
 #include "storage.grpc.pb.h"
@@ -31,6 +32,11 @@ public:
   StatusOr<std::string> Get(const std::string& key);
   StatusOr<ObjectMetadata> Head(const std::string& key);
   Status Delete(const std::string& key);
+
+  // Liveness probe; returns the node's live object count on success.
+  StatusOr<uint64_t> Health();
+  // Enumerate objects (for repair).
+  StatusOr<std::vector<ObjectMetadata>> List(const std::string& prefix);
 
   const std::string& address() const { return address_; }
 

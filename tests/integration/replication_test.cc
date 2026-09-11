@@ -4,16 +4,19 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "cluster/cluster_map.h"
 #include "common/digest.h"
 #include "network/coordinator.h"
+#include "network/repairer.h"
 #include "network/storage_node_client.h"
 #include "network/storage_node_server.h"
 #include "storage/local_object_store.h"
@@ -39,9 +42,6 @@ protected:
     fs::remove_all(root_);
 
     const std::vector<std::string> ids = {"node-a", "node-b", "node-c"};
-    ClusterMap cluster(150);
-    std::map<std::string, std::shared_ptr<StorageNodeClient>> clients;
-
     for (const auto& id : ids) {
       auto node = std::make_unique<Node>();
       node->id = id;
@@ -56,14 +56,14 @@ protected:
       NodeInfo info;
       info.id = id;
       info.address = node->address;
-      cluster.AddOrUpdateNode(info);
-      clients[id] =
+      cluster_.AddOrUpdateNode(info);
+      clients_[id] =
           std::make_shared<StorageNodeClient>(node->address, std::chrono::milliseconds(300));
       nodes_.push_back(std::move(node));
     }
 
     Coordinator::Options opts; // RF=3, W=2
-    coordinator_ = std::make_unique<Coordinator>(cluster, clients, opts);
+    coordinator_ = std::make_unique<Coordinator>(cluster_, clients_, opts);
   }
 
   void TearDown() override {
@@ -96,8 +96,40 @@ protected:
     out << "corrupted-bytes";
   }
 
+  // Stops a node's server (keeping its on-disk store) to simulate a crash.
+  void StopNode(const std::string& node_id) {
+    Node* n = NodeById(node_id);
+    ASSERT_NE(n, nullptr);
+    n->server->Shutdown();
+    n->server.reset();
+  }
+
+  // Restarts a previously stopped node on its original address so existing
+  // clients reconnect transparently.
+  void RestartNode(const std::string& node_id) {
+    Node* n = NodeById(node_id);
+    ASSERT_NE(n, nullptr);
+    n->server = std::make_unique<StorageNodeServer>(*n->store);
+    ASSERT_TRUE(n->server->Start(n->address)) << "rebind " << n->address;
+  }
+
+  // Polls a node's Health RPC until it responds or the timeout elapses. Needed
+  // after a restart because the client channel reconnects with backoff.
+  bool WaitForNodeReady(const std::string& node_id, std::chrono::milliseconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (clients_[node_id]->Health().ok()) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return false;
+  }
+
   fs::path root_;
   std::vector<std::unique_ptr<Node>> nodes_;
+  ClusterMap cluster_{150};
+  std::map<std::string, std::shared_ptr<StorageNodeClient>> clients_;
   std::unique_ptr<Coordinator> coordinator_;
 };
 
@@ -205,6 +237,44 @@ TEST_F(ReplicationTest, IdempotentRetryThroughCoordinatorDoesNotBumpVersion) {
     auto head = n->store->Head("k");
     ASSERT_TRUE(head.ok());
     EXPECT_EQ(head.value().version, 1u);
+  }
+}
+
+// A node misses writes while down, then rejoins and is repaired back to full
+// redundancy from healthy peers.
+TEST_F(ReplicationTest, RepairRestoresRedundancyAfterNodeRejoin) {
+  // Objects written while all three nodes are up.
+  for (int i = 0; i < 5; ++i) {
+    ASSERT_TRUE(coordinator_->Put("k" + std::to_string(i), "v" + std::to_string(i)).ok());
+  }
+
+  // node-c goes down; more writes land on the surviving quorum only.
+  StopNode("node-c");
+  for (int i = 5; i < 10; ++i) {
+    auto put = coordinator_->Put("k" + std::to_string(i), "v" + std::to_string(i));
+    ASSERT_TRUE(put.ok()) << put.status().ToString();
+  }
+
+  // node-c rejoins: it still has k0..k4 but is missing k5..k9.
+  RestartNode("node-c");
+  ASSERT_TRUE(WaitForNodeReady("node-c", std::chrono::seconds(5)));
+  Node* c = NodeById("node-c");
+  ASSERT_EQ(c->store->Head("k7").status().code(), StatusCode::kNotFound);
+
+  // Anti-entropy repair pulls the missing objects from healthy peers.
+  Repairer repairer(cluster_, clients_, /*replication_factor=*/3);
+  auto report = repairer.RepairNode("node-c");
+  ASSERT_TRUE(report.ok()) << report.status().ToString();
+  EXPECT_EQ(report.value().copied, 5u);          // k5..k9 restored
+  EXPECT_EQ(report.value().already_current, 5u); // k0..k4 already present
+  EXPECT_EQ(report.value().failed, 0u);
+
+  // node-c now holds every object, byte-identical and checksum-valid.
+  for (int i = 0; i < 10; ++i) {
+    const std::string key = "k" + std::to_string(i);
+    auto got = c->store->Get(key);
+    ASSERT_TRUE(got.ok()) << key << ": " << got.status().ToString();
+    EXPECT_EQ(got.value(), "v" + std::to_string(i));
   }
 }
 

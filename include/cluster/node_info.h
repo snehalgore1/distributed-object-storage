@@ -14,6 +14,7 @@ enum class NodeState {
   kHealthy,
   kSuspect,
   kUnavailable,
+  kRecovering, // rejoined after failure; being repaired before it is trusted
 };
 
 const char* NodeStateName(NodeState state);

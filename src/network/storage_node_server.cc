@@ -67,6 +67,34 @@ grpc::Status StorageNodeServiceImpl::Delete(grpc::ServerContext*, const rpc::Del
   return grpc::Status::OK;
 }
 
+grpc::Status StorageNodeServiceImpl::Health(grpc::ServerContext*, const rpc::HealthRequest*,
+                                            rpc::HealthResponse* resp) {
+  // Prove the store actually responds, rather than reporting mere reachability.
+  auto list = store_.List("");
+  if (!list.ok()) {
+    resp->set_code(ToProtoCode(list.status().code()));
+    return grpc::Status::OK;
+  }
+  resp->set_code(rpc::OK);
+  resp->set_object_count(list.value().size());
+  return grpc::Status::OK;
+}
+
+grpc::Status StorageNodeServiceImpl::List(grpc::ServerContext*, const rpc::ListRequest* req,
+                                          rpc::ListResponse* resp) {
+  auto list = store_.List(req->prefix());
+  if (!list.ok()) {
+    resp->set_code(ToProtoCode(list.status().code()));
+    resp->set_message(list.status().message());
+    return grpc::Status::OK;
+  }
+  resp->set_code(rpc::OK);
+  for (const auto& m : list.value()) {
+    ToProtoMeta(m, resp->add_objects());
+  }
+  return grpc::Status::OK;
+}
+
 bool StorageNodeServer::Start(const std::string& address) {
   grpc::ServerBuilder builder;
   builder.AddListeningPort(address, grpc::InsecureServerCredentials(), &bound_port_);

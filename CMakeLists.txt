@@ -80,6 +80,7 @@ add_library(dos_core
   src/common/thread_pool.cc
   src/cluster/consistent_hash_ring.cc
   src/cluster/cluster_map.cc
+  src/cluster/failure_detector.cc
   src/storage/sqlite_metadata_store.cc
   src/storage/local_object_store.cc)
 target_include_directories(dos_core
@@ -94,7 +95,8 @@ target_link_libraries(dos_core PUBLIC ${SQLite3_LIBRARIES} Threads::Threads PRIV
 add_library(dos_rpc
   src/network/storage_node_server.cc
   src/network/storage_node_client.cc
-  src/network/coordinator.cc)
+  src/network/coordinator.cc
+  src/network/repairer.cc)
 target_include_directories(dos_rpc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(dos_rpc PUBLIC dos_core dos_proto PRIVATE dos_warnings)
 
@@ -119,7 +121,8 @@ if(BUILD_TESTING)
     tests/unit/hash_test.cc
     tests/unit/consistent_hash_ring_test.cc
     tests/unit/cluster_map_test.cc
-    tests/unit/versioning_test.cc)
+    tests/unit/versioning_test.cc
+    tests/unit/failure_detector_test.cc)
   target_link_libraries(dos_unit_tests PRIVATE dos_core dos_warnings GTest::gtest_main)
   gtest_discover_tests(dos_unit_tests)
 

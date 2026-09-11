@@ -14,6 +14,8 @@ const char* NodeStateName(NodeState state) {
     return "SUSPECT";
   case NodeState::kUnavailable:
     return "UNAVAILABLE";
+  case NodeState::kRecovering:
+    return "RECOVERING";
   }
   return "UNKNOWN";
 }

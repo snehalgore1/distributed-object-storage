@@ -4,13 +4,14 @@ A fault-tolerant distributed object storage system in C++20 — built systems-fi
 to demonstrate concurrency, storage durability, distributed coordination, and
 performance engineering.
 
-> **Status:** Milestones 0–5 complete. A concurrent single-node storage engine
+> **Status:** Milestones 0–6 complete. A concurrent single-node storage engine
 > (checksums, atomic durable writes, versioning, SQLite metadata, bounded-queue
 > thread pool, sharded locking — TSan-clean), a consistent-hash **placement**
 > layer, **replication over gRPC** (RF=3 / W=2 quorum, checksum-verified read
-> fallback, replica-health tracking), and **conditional, idempotent writes**
-> (`expected_version` → `CONFLICT`, `request_id` dedup). Remaining layers (failure
-> detection + repair, WAL recovery, metadata-service split, observability,
+> fallback), **conditional, idempotent writes** (`expected_version` → `CONFLICT`,
+> `request_id` dedup), and **failure detection + anti-entropy repair**
+> (heartbeat state machine; a rejoining node is repaired back to full redundancy).
+> Remaining layers (WAL recovery, metadata-service split, observability,
 > deployment) are on the roadmap.
 
 ## What works today
@@ -38,6 +39,11 @@ performance engineering.
   `expected_version` (stale writers get `CONFLICT`, deterministically) and dedups
   retries by `request_id`, so a client timeout-and-retry never creates a second
   contradictory version. Concurrent writers on the same version → exactly one wins.
+- **Failure detection & repair**: a `FailureDetector` heartbeat state machine
+  (`Healthy → Suspect → Unavailable → Recovering → Healthy`, with a miss
+  threshold so transient blips don't declare a node dead) and a `Repairer` that
+  reconciles a rejoining node from healthy peers — checksum-verified — back to
+  full redundancy.
 
 ## Build & test
 
@@ -116,6 +122,12 @@ docs/     architecture.md, storage-engine.md
 - [Architecture](docs/architecture.md) — components and target topology.
 - [Storage engine](docs/storage-engine.md) — durability contract and exact
   crash behavior at each PUT boundary.
+- [Placement & consistency](docs/consistency.md) — consistent hashing, virtual
+  nodes, rebalancing.
+- [Protocol & replication](docs/protocol.md) — gRPC contract, quorum, conditional
+  & idempotent writes, consistency model.
+- [Failure model](docs/failure-model.md) — heartbeat detection and anti-entropy
+  repair.
 
 ## Roadmap
 
@@ -127,7 +139,7 @@ docs/     architecture.md, storage-engine.md
 | ✅ M3 | Consistent-hash ring + virtual nodes + cluster map (placement) |
 | ✅ M4 | Replication over gRPC: RF=3, W=2 quorum, checksum-verified read fallback |
 | ✅ M5 | Versioning & idempotency (conditional PUT → CONFLICT, request-id dedup) |
-| M6 | Failure detection + replica repair |
+| ✅ M6 | Failure detection (heartbeat FSM) + anti-entropy replica repair |
 | M7 | Write-ahead log + crash recovery |
 | M8 | Metadata service / control-plane split |
 | M9 | LRU cache + HTTP gateway + CLI |

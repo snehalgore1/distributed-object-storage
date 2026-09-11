@@ -57,6 +57,38 @@ replicas have committed the write through their local durable path**
 3. On a replica's failure or `CHECKSUM_MISMATCH`, **fall through to the next
    replica**. Only if every replica fails does the read fail.
 
+### Conditional writes & idempotency (Milestone 5)
+
+Beyond the unconditional write above, the coordinator offers a **conditional,
+idempotent** write (`PutConditional`) — the safe primitive for concurrent
+writers and client retries:
+
+- **`expected_version`** guards the write: it commits only if the current
+  committed version equals `expected_version` (0 = "must not already exist"),
+  producing `expected_version + 1`. A stale writer gets `CONFLICT`, deterministically.
+- Because the new version is a pure function of `expected_version`, **every
+  replica and every retry computes the same version** — no version drift.
+- **`request_id`** makes retries idempotent: if the request that produced the
+  current version carries the same id, the replica returns the existing metadata
+  instead of writing again. A client that times out and retries the identical
+  request never creates a second, contradictory version.
+
+Each replica enforces the condition locally under its per-key shard lock, so two
+concurrent writers with the same `expected_version` resolve to exactly one winner
+and one `CONFLICT`. The coordinator aggregates: a quorum of acks → success; a
+condition rejection that blocks the quorum → `CONFLICT`.
+
+Unconditional `Put` is *not* idempotent (a retry creates a new version); use
+`PutConditional` with a `request_id` when you need at-most-once semantics.
+
+### Delete semantics
+
+`Delete` is a **logical tombstone** (`deleted = 1`), replicated to a quorum.
+Tombstoned keys report `NOT_FOUND` from `Get`/`Head` and are excluded from
+`List`, but the row (version + last request id) is retained so a later
+conditional write can reference the current version. Physical payload reclamation
+is deferred (a later milestone).
+
 ### Consistency model (honest statement)
 
 - A write is acknowledged only after **W = 2** replicas commit, so any two

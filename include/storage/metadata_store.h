@@ -28,6 +28,11 @@ public:
   // was never written. Used to assign the next monotonic version.
   virtual StatusOr<uint64_t> CurrentVersion(std::string_view key) = 0;
 
+  // Returns the current row for `key` *including* tombstoned rows (unlike Get),
+  // or kNotFound if the key was never written. Used by the write path to read
+  // the current version and request_id for conditional/idempotent writes.
+  virtual StatusOr<ObjectMetadata> Peek(std::string_view key) = 0;
+
   // Marks a key deleted (tombstone). Returns kNotFound if the key is absent or
   // already tombstoned.
   virtual Status Delete(std::string_view key) = 0;

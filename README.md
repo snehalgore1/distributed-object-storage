@@ -4,13 +4,14 @@ A fault-tolerant distributed object storage system in C++20 — built systems-fi
 to demonstrate concurrency, storage durability, distributed coordination, and
 performance engineering.
 
-> **Status:** Milestones 0–4 complete. A concurrent single-node storage engine
+> **Status:** Milestones 0–5 complete. A concurrent single-node storage engine
 > (checksums, atomic durable writes, versioning, SQLite metadata, bounded-queue
 > thread pool, sharded locking — TSan-clean), a consistent-hash **placement**
-> layer, and **replication over gRPC**: three storage-node processes with an
-> RF=3 / W=2 quorum coordinator, checksum-verified read fallback, and
-> replica-health tracking. Remaining layers (failure detection + repair, WAL
-> recovery, metadata-service split, observability, deployment) are on the roadmap.
+> layer, **replication over gRPC** (RF=3 / W=2 quorum, checksum-verified read
+> fallback, replica-health tracking), and **conditional, idempotent writes**
+> (`expected_version` → `CONFLICT`, `request_id` dedup). Remaining layers (failure
+> detection + repair, WAL recovery, metadata-service split, observability,
+> deployment) are on the roadmap.
 
 ## What works today
 
@@ -33,6 +34,10 @@ performance engineering.
   W=2 **write quorum**, reads with **checksum-verified fallback** across
   replicas, and tracks replica health. Survives a single node down; fails a
   write cleanly when quorum is unreachable.
+- **Conditional & idempotent writes**: `PutConditional` enforces an
+  `expected_version` (stale writers get `CONFLICT`, deterministically) and dedups
+  retries by `request_id`, so a client timeout-and-retry never creates a second
+  contradictory version. Concurrent writers on the same version → exactly one wins.
 
 ## Build & test
 
@@ -121,7 +126,7 @@ docs/     architecture.md, storage-engine.md
 | ✅ M2 | Concurrency: thread pool, bounded queue, sharded locks (TSan-clean) |
 | ✅ M3 | Consistent-hash ring + virtual nodes + cluster map (placement) |
 | ✅ M4 | Replication over gRPC: RF=3, W=2 quorum, checksum-verified read fallback |
-| M5 | Versioning & idempotency (conditional PUT, request IDs) |
+| ✅ M5 | Versioning & idempotency (conditional PUT → CONFLICT, request-id dedup) |
 | M6 | Failure detection + replica repair |
 | M7 | Write-ahead log + crash recovery |
 | M8 | Metadata service / control-plane split |

@@ -23,6 +23,11 @@ public:
 
   // Writes at the coordinator-assigned `version`.
   StatusOr<ObjectMetadata> Put(const std::string& key, const std::string& data, uint64_t version);
+
+  // Conditional, idempotent write: enforce `expected_version` and dedup by
+  // `request_id` (spec Milestone 5).
+  StatusOr<ObjectMetadata> PutConditional(const std::string& key, const std::string& data,
+                                          uint64_t expected_version, const std::string& request_id);
   StatusOr<std::string> Get(const std::string& key);
   StatusOr<ObjectMetadata> Head(const std::string& key);
   Status Delete(const std::string& key);

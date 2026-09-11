@@ -40,6 +40,10 @@ public:
   StatusOr<ObjectMetadata> PutWithVersion(std::string_view key, std::string_view data,
                                           uint64_t version) override;
 
+  StatusOr<ObjectMetadata> PutConditional(std::string_view key, std::string_view data,
+                                          uint64_t expected_version,
+                                          std::string_view request_id) override;
+
   StatusOr<std::string> Get(std::string_view key) override;
   StatusOr<ObjectMetadata> Head(std::string_view key) override;
   Status Delete(std::string_view key) override;
@@ -49,11 +53,17 @@ private:
   LocalObjectStore(std::filesystem::path root, std::unique_ptr<MetadataStore> metadata)
       : root_(std::move(root)), metadata_(std::move(metadata)) {}
 
-  // Shared write path. If `explicit_version` is non-zero it is used verbatim;
-  // otherwise the version is auto-assigned as current + 1. Caller holds the
-  // key's shard lock.
+  // Shared write path; caller holds the key's shard lock. Version selection:
+  //   explicit_version != 0  -> use it verbatim (coordinator-assigned);
+  //   conditional            -> require current == expected_version, else
+  //                             kConflict; new version = expected_version + 1;
+  //   otherwise              -> auto-assign current + 1.
+  // If `request_id` is non-empty and equals the current row's request_id, the
+  // write is treated as a recognized retry and the existing metadata is returned
+  // unchanged.
   StatusOr<ObjectMetadata> DoPut(std::string_view key, std::string_view data,
-                                 uint64_t explicit_version);
+                                 uint64_t explicit_version, bool conditional,
+                                 uint64_t expected_version, std::string_view request_id);
 
   std::filesystem::path DataRoot() const { return root_ / "data"; }
   std::filesystem::path TmpDir() const { return root_ / "data" / "tmp"; }

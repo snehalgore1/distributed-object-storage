@@ -16,6 +16,7 @@ struct ObjectMetadata {
   uint64_t version = 0;   // monotonically increasing per key
   int64_t created_at = 0; // unix epoch seconds when this version was committed
   bool deleted = false;   // tombstone marker
+  std::string request_id; // id of the request that produced this version (idempotency)
 };
 
 } // namespace dos

@@ -136,7 +136,8 @@ StatusOr<ObjectMetadata> LocalObjectStore::Put(std::string_view key, std::string
   // Exclusive on this key's shard: serializes the version read/write below and
   // excludes concurrent readers of the same key.
   std::unique_lock<std::shared_mutex> lock(ShardFor(key));
-  return DoPut(key, data, /*explicit_version=*/0);
+  return DoPut(key, data, /*explicit_version=*/0, /*conditional=*/false, /*expected_version=*/0,
+               /*request_id=*/"");
 }
 
 StatusOr<ObjectMetadata> LocalObjectStore::PutWithVersion(std::string_view key,
@@ -148,21 +149,56 @@ StatusOr<ObjectMetadata> LocalObjectStore::PutWithVersion(std::string_view key,
     return Status::InvalidArgument("explicit version must be non-zero");
   }
   std::unique_lock<std::shared_mutex> lock(ShardFor(key));
-  return DoPut(key, data, version);
+  return DoPut(key, data, version, /*conditional=*/false, /*expected_version=*/0,
+               /*request_id=*/"");
+}
+
+StatusOr<ObjectMetadata> LocalObjectStore::PutConditional(std::string_view key,
+                                                          std::string_view data,
+                                                          uint64_t expected_version,
+                                                          std::string_view request_id) {
+  if (key.empty()) {
+    return Status::InvalidArgument("empty key");
+  }
+  std::unique_lock<std::shared_mutex> lock(ShardFor(key));
+  return DoPut(key, data, /*explicit_version=*/0, /*conditional=*/true, expected_version,
+               request_id);
 }
 
 StatusOr<ObjectMetadata> LocalObjectStore::DoPut(std::string_view key, std::string_view data,
-                                                 uint64_t explicit_version) {
-  const std::string digest = KeyDigest(key);
-  const fs::path object_path = PhysicalPath(DataRoot(), digest);
+                                                 uint64_t explicit_version, bool conditional,
+                                                 uint64_t expected_version,
+                                                 std::string_view request_id) {
+  const fs::path object_path = PhysicalPath(DataRoot(), KeyDigest(key));
 
-  uint64_t version = explicit_version;
-  if (version == 0) {
-    auto cur = metadata_->CurrentVersion(key);
-    if (!cur.ok()) {
-      return cur.status();
+  // Read the current row (including tombstones) once, for both idempotency and
+  // the conditional version check.
+  uint64_t current_version = 0;
+  auto peek = metadata_->Peek(key);
+  if (peek.ok()) {
+    current_version = peek.value().version;
+    // Idempotency: a non-empty request_id that already produced the current
+    // version means this is a recognized retry -> return the committed result.
+    if (!request_id.empty() && peek.value().request_id == std::string(request_id)) {
+      return peek.value();
     }
-    version = cur.value() + 1;
+  } else if (peek.status().code() != StatusCode::kNotFound) {
+    return peek.status();
+  }
+
+  if (conditional && current_version != expected_version) {
+    return Status::Conflict("version conflict for '" + std::string(key) + "': expected " +
+                            std::to_string(expected_version) + ", have " +
+                            std::to_string(current_version));
+  }
+
+  uint64_t version;
+  if (explicit_version != 0) {
+    version = explicit_version;
+  } else if (conditional) {
+    version = expected_version + 1;
+  } else {
+    version = current_version + 1;
   }
 
   ObjectMetadata meta;
@@ -172,6 +208,7 @@ StatusOr<ObjectMetadata> LocalObjectStore::DoPut(std::string_view key, std::stri
   meta.version = version;
   meta.created_at = static_cast<int64_t>(::time(nullptr));
   meta.deleted = false;
+  meta.request_id = std::string(request_id);
 
   // Stage + durably place the payload BEFORE committing metadata. If we crash
   // before the metadata Put, the object is invisible and gets overwritten on

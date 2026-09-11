@@ -44,6 +44,14 @@ public:
   // Writes to the replica set. Succeeds only once W replicas acknowledge.
   StatusOr<ObjectMetadata> Put(const std::string& key, const std::string& data);
 
+  // Conditional, idempotent write across the replica set (spec Milestone 5).
+  // The assigned version is a pure function of expected_version
+  // (expected_version + 1), so a retry with the same request_id and expectation
+  // is naturally idempotent. Returns kConflict if a quorum of acks cannot be
+  // reached because replicas reject the expected version.
+  StatusOr<ObjectMetadata> PutConditional(const std::string& key, const std::string& data,
+                                          uint64_t expected_version, const std::string& request_id);
+
   // Reads from the first replica that returns checksum-valid data.
   StatusOr<std::string> Get(const std::string& key);
 

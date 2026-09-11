@@ -33,6 +33,23 @@ void BindText(sqlite3_stmt* s, int idx, std::string_view v) {
   sqlite3_bind_text(s, idx, v.data(), static_cast<int>(v.size()), SQLITE_TRANSIENT);
 }
 
+// Columns must be selected in this order:
+//   key, size, checksum, version, created_at, deleted, last_request_id
+constexpr const char* kSelectColumns =
+    "key, size, checksum, version, created_at, deleted, last_request_id";
+
+ObjectMetadata ReadRow(sqlite3_stmt* q) {
+  ObjectMetadata meta;
+  meta.key = reinterpret_cast<const char*>(sqlite3_column_text(q, 0));
+  meta.size = static_cast<uint64_t>(sqlite3_column_int64(q, 1));
+  meta.checksum = reinterpret_cast<const char*>(sqlite3_column_text(q, 2));
+  meta.version = static_cast<uint64_t>(sqlite3_column_int64(q, 3));
+  meta.created_at = sqlite3_column_int64(q, 4);
+  meta.deleted = sqlite3_column_int(q, 5) != 0;
+  meta.request_id = reinterpret_cast<const char*>(sqlite3_column_text(q, 6));
+  return meta;
+}
+
 } // namespace
 
 StatusOr<std::unique_ptr<SqliteMetadataStore>>
@@ -60,7 +77,8 @@ SqliteMetadataStore::Open(const std::filesystem::path& db_path) {
                                          "  checksum TEXT NOT NULL,"
                                          "  version BIGINT NOT NULL,"
                                          "  created_at BIGINT NOT NULL,"
-                                         "  deleted INTEGER NOT NULL DEFAULT 0"
+                                         "  deleted INTEGER NOT NULL DEFAULT 0,"
+                                         "  last_request_id TEXT NOT NULL DEFAULT ''"
                                          ");";
   char* err = nullptr;
   rc = sqlite3_exec(db, kSchema, nullptr, nullptr, &err);
@@ -78,13 +96,13 @@ SqliteMetadataStore::~SqliteMetadataStore() { sqlite3_close(db_); }
 
 Status SqliteMetadataStore::Put(const ObjectMetadata& meta) {
   Stmt stmt;
-  Status s =
-      stmt.Prepare(db_, "INSERT INTO objects(key, size, checksum, version, created_at, deleted)"
-                        " VALUES(?,?,?,?,?,?)"
-                        " ON CONFLICT(key) DO UPDATE SET"
-                        "  size=excluded.size, checksum=excluded.checksum,"
-                        "  version=excluded.version, created_at=excluded.created_at,"
-                        "  deleted=excluded.deleted;");
+  Status s = stmt.Prepare(
+      db_, "INSERT INTO objects(key, size, checksum, version, created_at, deleted, last_request_id)"
+           " VALUES(?,?,?,?,?,?,?)"
+           " ON CONFLICT(key) DO UPDATE SET"
+           "  size=excluded.size, checksum=excluded.checksum,"
+           "  version=excluded.version, created_at=excluded.created_at,"
+           "  deleted=excluded.deleted, last_request_id=excluded.last_request_id;");
   if (!s.ok()) {
     return s;
   }
@@ -95,6 +113,7 @@ Status SqliteMetadataStore::Put(const ObjectMetadata& meta) {
   sqlite3_bind_int64(q, 4, static_cast<sqlite3_int64>(meta.version));
   sqlite3_bind_int64(q, 5, meta.created_at);
   sqlite3_bind_int(q, 6, meta.deleted ? 1 : 0);
+  BindText(q, 7, meta.request_id);
   if (sqlite3_step(q) != SQLITE_DONE) {
     return Status::IoError(std::string("put failed: ") + sqlite3_errmsg(db_));
   }
@@ -103,8 +122,8 @@ Status SqliteMetadataStore::Put(const ObjectMetadata& meta) {
 
 StatusOr<ObjectMetadata> SqliteMetadataStore::Get(std::string_view key) {
   Stmt stmt;
-  Status s = stmt.Prepare(
-      db_, "SELECT key, size, checksum, version, created_at, deleted FROM objects WHERE key=?;");
+  Status s =
+      stmt.Prepare(db_, std::string("SELECT ") + kSelectColumns + " FROM objects WHERE key=?;");
   if (!s.ok()) {
     return s;
   }
@@ -117,17 +136,32 @@ StatusOr<ObjectMetadata> SqliteMetadataStore::Get(std::string_view key) {
   if (rc != SQLITE_ROW) {
     return Status::IoError(std::string("get failed: ") + sqlite3_errmsg(db_));
   }
-  ObjectMetadata meta;
-  meta.key = reinterpret_cast<const char*>(sqlite3_column_text(q, 0));
-  meta.size = static_cast<uint64_t>(sqlite3_column_int64(q, 1));
-  meta.checksum = reinterpret_cast<const char*>(sqlite3_column_text(q, 2));
-  meta.version = static_cast<uint64_t>(sqlite3_column_int64(q, 3));
-  meta.created_at = sqlite3_column_int64(q, 4);
-  meta.deleted = sqlite3_column_int(q, 5) != 0;
+  ObjectMetadata meta = ReadRow(q);
   if (meta.deleted) {
     return Status::NotFound(std::string("tombstoned: ") + std::string(key));
   }
   return meta;
+}
+
+StatusOr<ObjectMetadata> SqliteMetadataStore::Peek(std::string_view key) {
+  // Like Get but returns tombstoned rows too (the write path needs the current
+  // version and request_id even when the key is logically deleted).
+  Stmt stmt;
+  Status s =
+      stmt.Prepare(db_, std::string("SELECT ") + kSelectColumns + " FROM objects WHERE key=?;");
+  if (!s.ok()) {
+    return s;
+  }
+  sqlite3_stmt* q = stmt.get();
+  BindText(q, 1, key);
+  int rc = sqlite3_step(q);
+  if (rc == SQLITE_DONE) {
+    return Status::NotFound(std::string("no such key: ") + std::string(key));
+  }
+  if (rc != SQLITE_ROW) {
+    return Status::IoError(std::string("peek failed: ") + sqlite3_errmsg(db_));
+  }
+  return ReadRow(q);
 }
 
 StatusOr<uint64_t> SqliteMetadataStore::CurrentVersion(std::string_view key) {
@@ -168,9 +202,9 @@ Status SqliteMetadataStore::Delete(std::string_view key) {
 
 StatusOr<std::vector<ObjectMetadata>> SqliteMetadataStore::List(std::string_view prefix) {
   Stmt stmt;
-  Status s =
-      stmt.Prepare(db_, "SELECT key, size, checksum, version, created_at, deleted FROM objects"
-                        " WHERE deleted=0 AND key >= ? AND key < ? ORDER BY key;");
+  Status s = stmt.Prepare(db_, std::string("SELECT ") + kSelectColumns +
+                                   " FROM objects WHERE deleted=0 AND key >= ? AND key < ?"
+                                   " ORDER BY key;");
   if (!s.ok()) {
     return s;
   }
@@ -196,14 +230,7 @@ StatusOr<std::vector<ObjectMetadata>> SqliteMetadataStore::List(std::string_view
   std::vector<ObjectMetadata> out;
   int rc;
   while ((rc = sqlite3_step(q)) == SQLITE_ROW) {
-    ObjectMetadata meta;
-    meta.key = reinterpret_cast<const char*>(sqlite3_column_text(q, 0));
-    meta.size = static_cast<uint64_t>(sqlite3_column_int64(q, 1));
-    meta.checksum = reinterpret_cast<const char*>(sqlite3_column_text(q, 2));
-    meta.version = static_cast<uint64_t>(sqlite3_column_int64(q, 3));
-    meta.created_at = sqlite3_column_int64(q, 4);
-    meta.deleted = sqlite3_column_int(q, 5) != 0;
-    out.push_back(std::move(meta));
+    out.push_back(ReadRow(q));
   }
   if (rc != SQLITE_DONE) {
     return Status::IoError(std::string("list failed: ") + sqlite3_errmsg(db_));

@@ -30,6 +30,7 @@ public:
   Status Put(const ObjectMetadata& meta) override;
   StatusOr<ObjectMetadata> Get(std::string_view key) override;
   StatusOr<uint64_t> CurrentVersion(std::string_view key) override;
+  StatusOr<ObjectMetadata> Peek(std::string_view key) override;
   Status Delete(std::string_view key) override;
   StatusOr<std::vector<ObjectMetadata>> List(std::string_view prefix) override;
 

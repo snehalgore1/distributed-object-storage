@@ -105,6 +105,66 @@ StatusOr<ObjectMetadata> Coordinator::Put(const std::string& key, const std::str
   return meta;
 }
 
+StatusOr<ObjectMetadata> Coordinator::PutConditional(const std::string& key,
+                                                     const std::string& data,
+                                                     uint64_t expected_version,
+                                                     const std::string& request_id) {
+  const std::vector<std::string> replicas = cluster_.PlacementFor(key, opts_.replication_factor);
+  if (replicas.size() < opts_.write_quorum) {
+    return Status::Unavailable("cluster too small to satisfy write quorum");
+  }
+
+  // The version is fully determined by the expectation, so every replica (and
+  // every retry) computes the same version -> no drift, retries are idempotent.
+  const uint64_t version = expected_version + 1;
+
+  std::vector<std::future<std::pair<std::string, StatusCode>>> futures;
+  futures.reserve(replicas.size());
+  for (const auto& node_id : replicas) {
+    futures.push_back(std::async(std::launch::async, [this, node_id, &key, &data, expected_version,
+                                                      &request_id] {
+      StorageNodeClient* client = ClientFor(node_id);
+      if (client == nullptr) {
+        return std::make_pair(node_id, StatusCode::kUnavailable);
+      }
+      return std::make_pair(
+          node_id, client->PutConditional(key, data, expected_version, request_id).status().code());
+    }));
+  }
+
+  std::size_t acks = 0;
+  bool saw_conflict = false;
+  for (auto& f : futures) {
+    auto [node_id, code] = f.get();
+    if (code == StatusCode::kOk) {
+      ++acks;
+      MarkHealth(node_id, ReplicaHealth::kHealthy);
+    } else {
+      if (code == StatusCode::kConflict) {
+        saw_conflict = true;
+      }
+      MarkHealth(node_id,
+                 code == StatusCode::kConflict ? ReplicaHealth::kHealthy : ReplicaHealth::kLagging);
+    }
+  }
+
+  if (acks >= opts_.write_quorum) {
+    ObjectMetadata meta;
+    meta.key = key;
+    meta.size = data.size();
+    meta.checksum = Sha256Hex(data);
+    meta.version = version;
+    meta.deleted = false;
+    meta.request_id = request_id;
+    return meta;
+  }
+  if (saw_conflict) {
+    return Status::Conflict("conditional write rejected: expected version " +
+                            std::to_string(expected_version));
+  }
+  return Status::Unavailable("write quorum not met for conditional put");
+}
+
 StatusOr<std::string> Coordinator::Get(const std::string& key) {
   const std::vector<std::string> replicas = cluster_.PlacementFor(key, opts_.replication_factor);
   if (replicas.empty()) {

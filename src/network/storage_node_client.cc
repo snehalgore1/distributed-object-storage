@@ -32,6 +32,29 @@ StatusOr<ObjectMetadata> StorageNodeClient::Put(const std::string& key, const st
   return FromProtoMeta(resp.meta());
 }
 
+StatusOr<ObjectMetadata> StorageNodeClient::PutConditional(const std::string& key,
+                                                           const std::string& data,
+                                                           uint64_t expected_version,
+                                                           const std::string& request_id) {
+  rpc::PutRequest req;
+  req.set_key(key);
+  req.set_data(data);
+  req.set_conditional(true);
+  req.set_expected_version(expected_version);
+  req.set_request_id(request_id);
+  rpc::PutResponse resp;
+  grpc::ClientContext ctx;
+  SetDeadline(ctx);
+  grpc::Status s = stub_->Put(&ctx, req, &resp);
+  if (!s.ok()) {
+    return Status::Unavailable("Put RPC to " + address_ + " failed: " + s.error_message());
+  }
+  if (resp.code() != rpc::OK) {
+    return Status(FromProtoCode(resp.code()), resp.message());
+  }
+  return FromProtoMeta(resp.meta());
+}
+
 StatusOr<std::string> StorageNodeClient::Get(const std::string& key) {
   rpc::GetRequest req;
   req.set_key(key);

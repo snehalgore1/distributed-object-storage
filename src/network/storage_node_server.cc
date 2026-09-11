@@ -8,11 +8,15 @@ namespace dos {
 
 grpc::Status StorageNodeServiceImpl::Put(grpc::ServerContext*, const rpc::PutRequest* req,
                                          rpc::PutResponse* resp) {
-  // Version 0 means "auto-assign" (single-node/local use); a non-zero version
-  // is the coordinator-assigned version shared across replicas.
+  // Routing:
+  //   conditional  -> enforce expected_version + request_id idempotency (M5);
+  //   version != 0 -> coordinator-assigned absolute version (M4 replication);
+  //   otherwise    -> auto-assign (single-node/local use).
   StatusOr<ObjectMetadata> result =
-      req->version() == 0 ? store_.Put(req->key(), req->data())
-                          : store_.PutWithVersion(req->key(), req->data(), req->version());
+      req->conditional() ? store_.PutConditional(req->key(), req->data(), req->expected_version(),
+                                                 req->request_id())
+      : req->version() == 0 ? store_.Put(req->key(), req->data())
+                            : store_.PutWithVersion(req->key(), req->data(), req->version());
   if (result.ok()) {
     resp->set_code(rpc::OK);
     ToProtoMeta(result.value(), resp->mutable_meta());

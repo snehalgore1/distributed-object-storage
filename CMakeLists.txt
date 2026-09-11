@@ -118,7 +118,8 @@ if(BUILD_TESTING)
     tests/unit/concurrency_test.cc
     tests/unit/hash_test.cc
     tests/unit/consistent_hash_ring_test.cc
-    tests/unit/cluster_map_test.cc)
+    tests/unit/cluster_map_test.cc
+    tests/unit/versioning_test.cc)
   target_link_libraries(dos_unit_tests PRIVATE dos_core dos_warnings GTest::gtest_main)
   gtest_discover_tests(dos_unit_tests)
 

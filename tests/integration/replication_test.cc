@@ -172,6 +172,42 @@ TEST_F(ReplicationTest, ReadFallsBackOnChecksumMismatch) {
   EXPECT_EQ(got.value(), "trusted-content");
 }
 
+TEST_F(ReplicationTest, ConditionalWriteEnforcesVersionAcrossCluster) {
+  // Create-only (expected=0) succeeds and replicates.
+  auto v1 = coordinator_->PutConditional("cfg", "one", /*expected=*/0, "req-a");
+  ASSERT_TRUE(v1.ok()) << v1.status().ToString();
+  EXPECT_EQ(v1.value().version, 1u);
+
+  // A stale writer expecting version 0 is rejected cluster-wide.
+  auto stale = coordinator_->PutConditional("cfg", "two", /*expected=*/0, "req-b");
+  ASSERT_FALSE(stale.ok());
+  EXPECT_EQ(stale.status().code(), StatusCode::kConflict);
+
+  // Correct expectation advances the value.
+  auto v2 = coordinator_->PutConditional("cfg", "two", /*expected=*/1, "req-c");
+  ASSERT_TRUE(v2.ok());
+  EXPECT_EQ(v2.value().version, 2u);
+  EXPECT_EQ(coordinator_->Get("cfg").value(), "two");
+}
+
+TEST_F(ReplicationTest, IdempotentRetryThroughCoordinatorDoesNotBumpVersion) {
+  auto first = coordinator_->PutConditional("k", "payload", /*expected=*/0, "idem-1");
+  ASSERT_TRUE(first.ok());
+  EXPECT_EQ(first.value().version, 1u);
+
+  // Same request replayed (e.g. client timed out and retried): still version 1.
+  auto retry = coordinator_->PutConditional("k", "payload", /*expected=*/0, "idem-1");
+  ASSERT_TRUE(retry.ok()) << retry.status().ToString();
+  EXPECT_EQ(retry.value().version, 1u);
+
+  // Every replica still holds exactly version 1.
+  for (auto& n : nodes_) {
+    auto head = n->store->Head("k");
+    ASSERT_TRUE(head.ok());
+    EXPECT_EQ(head.value().version, 1u);
+  }
+}
+
 TEST_F(ReplicationTest, DeleteRemovesAcrossReplicas) {
   ASSERT_TRUE(coordinator_->Put("temp", "bytes").ok());
   ASSERT_TRUE(coordinator_->Delete("temp").ok());

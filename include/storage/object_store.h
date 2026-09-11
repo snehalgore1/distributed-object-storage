@@ -26,6 +26,16 @@ public:
   virtual StatusOr<ObjectMetadata> PutWithVersion(std::string_view key, std::string_view data,
                                                   uint64_t version) = 0;
 
+  // Conditional, idempotent write (spec Milestone 5). Writes only if the current
+  // committed version equals `expected_version` (0 = "must not already exist"),
+  // producing version expected_version + 1; otherwise returns kConflict. If
+  // `request_id` is non-empty and matches the request that produced the current
+  // version, the write is a recognized retry: the existing metadata is returned
+  // unchanged (no new version), making client retries safe.
+  virtual StatusOr<ObjectMetadata> PutConditional(std::string_view key, std::string_view data,
+                                                  uint64_t expected_version,
+                                                  std::string_view request_id) = 0;
+
   // Returns the object bytes, after verifying the stored checksum. A checksum
   // mismatch yields kChecksumMismatch; a missing key yields kNotFound.
   virtual StatusOr<std::string> Get(std::string_view key) = 0;

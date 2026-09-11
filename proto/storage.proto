@@ -39,8 +39,10 @@ service StorageNode {
 message PutRequest {
   string key = 1;
   bytes data = 2;
-  uint64 version = 3;      // assigned by the coordinator
-  string request_id = 4;   // for idempotent retries (used from M5)
+  uint64 version = 3;         // assigned by the coordinator (0 = auto)
+  string request_id = 4;      // for idempotent retries (M5)
+  bool conditional = 5;       // if true, enforce expected_version
+  uint64 expected_version = 6; // required current version (0 = must not exist)
 }
 message PutResponse {
   Code code = 1;

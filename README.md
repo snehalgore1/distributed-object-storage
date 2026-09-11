@@ -15,8 +15,9 @@ performance engineering.
 > (interrupted writes are completed or discarded on restart), a **metadata /
 > control-plane split** (placement and the object→replica map live behind a
 > `Metadata` gRPC service; payloads never touch it), and an **HTTP gateway + CLI
-> + LRU metadata cache** — the whole cluster is usable over `curl`. Remaining
-> layers (observability, Docker/K8s) are next.
+> + LRU metadata cache** — the whole cluster is usable over `curl` — and
+> **observability**: structured JSON logs with request IDs and a Prometheus
+> `/metrics` endpoint (+ Grafana dashboard). Remaining layers (Docker/K8s) are next.
 
 ## See it fail over
 
@@ -103,6 +104,10 @@ write-ahead log + SHA-256 integrity. See [docs/architecture.md](docs/architectur
   `PUT/GET/HEAD/DELETE/LIST` over `/objects/<key>` — usable from `dos_cli` or
   plain `curl` — with gRPC-`Status`→HTTP-code mapping. Reads flow through an O(1)
   **LRU metadata cache** kept coherent on writes.
+- **Observability**: a per-request **request id** (returned as `X-Request-Id`,
+  logged in structured JSON with latency) for end-to-end tracing, and a
+  Prometheus **`/metrics`** endpoint (request/error counters, latency histograms,
+  cache hit ratio, replica state) with a ready-to-import Grafana dashboard.
 
 ## Build & test
 
@@ -210,7 +215,8 @@ clear optimization targets (batch/group-commit; a hardware-accelerated hash).
 
 ```
 proto/    storage.proto (StorageNode) · metadata.proto (Metadata control plane)
-include/  common/ (status, sha256, hash, digest, thread_pool, lru_cache)
+include/  common/ (status, sha256, hash, digest, thread_pool, lru_cache,
+                    metrics, logging)
           cluster/ (consistent_hash_ring, cluster_map, failure_detector,
                     metadata_view, metadata_repository, caching_metadata_view)
           storage/ (object_store, local_object_store, sqlite_metadata_store, wal)
@@ -236,6 +242,8 @@ docs/     architecture, storage-engine, consistency, protocol, failure-model
   repair.
 - [Gateway, CLI & cache](docs/gateway.md) — HTTP API, `dos_cli`, LRU metadata
   cache.
+- [Observability](docs/observability.md) — request IDs, structured logs,
+  Prometheus metrics, Grafana.
 
 ## Roadmap
 
@@ -251,7 +259,7 @@ docs/     architecture, storage-engine, consistency, protocol, failure-model
 | ✅ M7 | Write-ahead log + crash recovery (interrupted writes completed/discarded) |
 | ✅ M8 | Metadata / control-plane split (placement + object→replica map behind a gRPC service) |
 | ✅ M9 | HTTP gateway + CLI + O(1) LRU metadata cache |
-| M10 | Observability (Prometheus + Grafana, structured logs) |
+| ✅ M10 | Observability: request IDs, JSON logs, Prometheus `/metrics`, Grafana |
 | M11 | Docker Compose |
 | M12 | Kubernetes (kind) |
 | M13 | Performance engineering + benchmarks |

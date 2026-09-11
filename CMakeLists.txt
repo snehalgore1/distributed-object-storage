@@ -80,6 +80,8 @@ add_library(dos_core
   src/common/digest.cc
   src/common/hash.cc
   src/common/thread_pool.cc
+  src/common/metrics.cc
+  src/common/logging.cc
   src/cluster/consistent_hash_ring.cc
   src/cluster/cluster_map.cc
   src/cluster/failure_detector.cc
@@ -151,7 +153,9 @@ if(BUILD_TESTING)
     tests/unit/crash_recovery_test.cc
     tests/unit/metadata_repository_test.cc
     tests/unit/lru_cache_test.cc
-    tests/unit/caching_metadata_view_test.cc)
+    tests/unit/caching_metadata_view_test.cc
+    tests/unit/metrics_test.cc
+    tests/unit/logging_test.cc)
   target_link_libraries(dos_unit_tests PRIVATE dos_core dos_warnings GTest::gtest_main)
   gtest_discover_tests(dos_unit_tests)
 

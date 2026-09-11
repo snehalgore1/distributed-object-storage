@@ -50,6 +50,7 @@ protected:
     cache_ = std::make_shared<CachingMetadataView>(repo, 1024);
     auto coordinator = std::make_shared<Coordinator>(cache_, clients, Coordinator::Options{});
     gateway_ = std::make_unique<HttpGateway>(coordinator);
+    gateway_->SetCacheView(cache_);
     ASSERT_TRUE(gateway_->Start("127.0.0.1", 0));
     port_ = gateway_->bound_port();
   }
@@ -129,6 +130,29 @@ TEST_F(HttpGatewayTest, CacheAbsorbsRepeatedReads) {
   }
   // The PUT populated the cache and the reads hit it.
   EXPECT_GT(cache_->hits(), 0u);
+}
+
+TEST_F(HttpGatewayTest, ResponsesCarryRequestId) {
+  auto get = Client().Request("GET", "/objects/whatever");
+  ASSERT_TRUE(get.ok());
+  auto it = get.value().headers.find("x-request-id");
+  ASSERT_NE(it, get.value().headers.end());
+  EXPECT_FALSE(it->second.empty());
+}
+
+TEST_F(HttpGatewayTest, MetricsEndpointExposesPrometheusText) {
+  auto client = Client();
+  ASSERT_EQ(client.Request("PUT", "/objects/m", "x").value().status, 201);
+  ASSERT_EQ(client.Request("GET", "/objects/m").value().status, 200);
+
+  auto metrics = client.Request("GET", "/metrics");
+  ASSERT_TRUE(metrics.ok());
+  EXPECT_EQ(metrics.value().status, 200);
+  const std::string& body = metrics.value().body;
+  EXPECT_NE(body.find("# TYPE dos_http_requests_total counter"), std::string::npos);
+  EXPECT_NE(body.find("dos_http_requests_total{"), std::string::npos);
+  EXPECT_NE(body.find("dos_http_request_duration_seconds_bucket"), std::string::npos);
+  EXPECT_NE(body.find("dos_cache_hits"), std::string::npos);
 }
 
 } // namespace

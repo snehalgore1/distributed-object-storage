@@ -1,6 +1,7 @@
 #ifndef DOS_NETWORK_HTTP_CLIENT_H_
 #define DOS_NETWORK_HTTP_CLIENT_H_
 
+#include <map>
 #include <string>
 
 #include "common/status.h"
@@ -10,6 +11,7 @@ namespace dos {
 struct HttpClientResponse {
   int status = 0;
   std::string body;
+  std::map<std::string, std::string> headers; // lower-cased header names
 };
 
 // Minimal blocking HTTP/1.1 client for the CLI and tests. Sends a single

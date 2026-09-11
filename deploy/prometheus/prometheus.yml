@@ -1,0 +1,15 @@
+# Prometheus scrape config for the object store (spec Milestone 10).
+# Point Prometheus at the gateway's /metrics endpoint.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: dos-gateway
+    metrics_path: /metrics
+    static_configs:
+      # Under Docker Compose (Milestone 11) this is the gateway service name;
+      # for a local run use host.docker.internal:8080 or 127.0.0.1:8080.
+      - targets: ["gateway:8080"]
+        labels:
+          service: gateway

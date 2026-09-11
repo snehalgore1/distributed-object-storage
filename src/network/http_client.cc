@@ -84,6 +84,26 @@ StatusOr<HttpClientResponse> HttpClient::Request(const std::string& method,
   const auto hdr_end = resp.find("\r\n\r\n");
   if (hdr_end != std::string::npos) {
     out.body = resp.substr(hdr_end + 4);
+    // Parse headers (skip the status line), lower-casing names.
+    const std::string head = resp.substr(0, hdr_end);
+    std::size_t pos = head.find("\r\n");
+    while (pos != std::string::npos) {
+      const std::size_t line_start = pos + 2;
+      std::size_t line_end = head.find("\r\n", line_start);
+      const std::string line = head.substr(
+          line_start, line_end == std::string::npos ? std::string::npos : line_end - line_start);
+      const auto colon = line.find(':');
+      if (colon != std::string::npos) {
+        std::string name = line.substr(0, colon);
+        std::string value = line.substr(colon + 1);
+        while (!value.empty() && value.front() == ' ')
+          value.erase(value.begin());
+        for (auto& ch : name)
+          ch = static_cast<char>(::tolower(ch));
+        out.headers[name] = value;
+      }
+      pos = line_end;
+    }
   }
   return out;
 }

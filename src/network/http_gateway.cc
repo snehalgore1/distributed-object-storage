@@ -1,6 +1,9 @@
 #include "network/http_gateway.h"
 
+#include <chrono>
 #include <sstream>
+
+#include "common/logging.h"
 
 namespace dos {
 namespace {
@@ -49,6 +52,68 @@ std::string JsonEscape(const std::string& s) {
 } // namespace
 
 HttpResponse HttpGateway::Handle(const HttpRequest& req) {
+  // /metrics is not counted as an object operation.
+  if (req.path == "/metrics") {
+    HttpResponse r;
+    r.status = 200;
+    r.content_type = "text/plain; version=0.0.4";
+    r.body = MetricsText();
+    return r;
+  }
+
+  const std::string request_id = NewRequestId();
+  metrics_.SetGauge("dos_http_in_flight", "requests being served",
+                    static_cast<double>(in_flight_.fetch_add(1) + 1));
+  const auto t0 = std::chrono::steady_clock::now();
+
+  HttpResponse resp = Route(req);
+
+  const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  metrics_.SetGauge("dos_http_in_flight", "requests being served",
+                    static_cast<double>(in_flight_.fetch_sub(1) - 1));
+  metrics_.IncCounter("dos_http_requests_total", "total HTTP requests", 1,
+                      {{"method", req.method}, {"code", std::to_string(resp.status)}});
+  if (resp.status >= 500) {
+    metrics_.IncCounter("dos_http_errors_total", "5xx responses", 1, {{"method", req.method}});
+  }
+  metrics_.ObserveHistogram("dos_http_request_duration_seconds", "request latency", secs,
+                            {{"method", req.method}});
+  resp.headers["X-Request-Id"] = request_id;
+
+  LogInfo("http_request", {{"request_id", request_id},
+                           {"method", req.method},
+                           {"path", req.path},
+                           {"status", std::to_string(resp.status)},
+                           {"duration_ms", std::to_string(secs * 1000.0)}});
+  return resp;
+}
+
+std::string HttpGateway::MetricsText() {
+  if (cache_) {
+    metrics_.SetGauge("dos_cache_hits", "metadata cache hits", static_cast<double>(cache_->hits()));
+    metrics_.SetGauge("dos_cache_misses", "metadata cache misses",
+                      static_cast<double>(cache_->misses()));
+    metrics_.SetGauge("dos_cache_hit_ratio", "metadata cache hit ratio", cache_->hit_rate());
+  }
+  // Replica health from the coordinator's point of view.
+  int healthy = 0, lagging = 0, failed = 0;
+  for (const auto& [id, h] : coordinator_->ReplicaHealthSnapshot()) {
+    (void)id;
+    if (h == ReplicaHealth::kHealthy) {
+      ++healthy;
+    } else if (h == ReplicaHealth::kLagging) {
+      ++lagging;
+    } else {
+      ++failed;
+    }
+  }
+  metrics_.SetGauge("dos_replicas", "replica count by state", healthy, {{"state", "healthy"}});
+  metrics_.SetGauge("dos_replicas", "replica count by state", lagging, {{"state", "lagging"}});
+  metrics_.SetGauge("dos_replicas", "replica count by state", failed, {{"state", "failed"}});
+  return metrics_.Serialize();
+}
+
+HttpResponse HttpGateway::Route(const HttpRequest& req) {
   static const std::string kPrefix = "/objects";
   if (req.path.rfind(kPrefix, 0) != 0) {
     HttpResponse r;

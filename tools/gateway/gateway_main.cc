@@ -66,6 +66,7 @@ int main(int argc, char** argv) {
   auto coordinator =
       std::make_shared<dos::Coordinator>(cache, clients, dos::Coordinator::Options{});
   dos::HttpGateway gateway(coordinator);
+  gateway.SetCacheView(cache); // expose cache hit/miss at /metrics
 
   const auto [host, port] = SplitHostPort(listen, 8080);
   if (!gateway.Start(host, port)) {

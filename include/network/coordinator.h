@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-#include "cluster/cluster_map.h"
+#include "cluster/metadata_view.h"
 #include "common/status.h"
 #include "network/storage_node_client.h"
 #include "storage/object_metadata.h"
@@ -24,13 +24,12 @@ enum class ReplicaHealth {
 
 const char* ReplicaHealthName(ReplicaHealth h);
 
-// Coordinates reads and writes across a replica set using consistent-hash
-// placement (spec Milestone 4).
-//
-// Write path: assign a version, fan out to all RF replicas in parallel, and ACK
-// once the write quorum W succeeds. Read path: try replicas in placement order,
-// falling through to the next on failure or checksum mismatch (each node
-// verifies integrity, so a successful read is checksum-valid).
+// Orchestrates reads and writes across the data plane, using the control plane
+// (MetadataView) for placement and the authoritative object -> replica map
+// (spec Milestones 4-8). Placement and versioning live in the metadata service,
+// not in the coordinator: the coordinator asks where to write, writes to the
+// data-plane storage nodes under a quorum, and registers the resulting replica
+// set back with the metadata service.
 class Coordinator {
 public:
   struct Options {
@@ -38,35 +37,24 @@ public:
     std::size_t write_quorum = 2; // W: acks required before a write is durable
   };
 
-  Coordinator(ClusterMap cluster, std::map<std::string, std::shared_ptr<StorageNodeClient>> clients,
-              Options opts);
+  Coordinator(std::shared_ptr<MetadataView> metadata,
+              std::map<std::string, std::shared_ptr<StorageNodeClient>> clients, Options opts);
 
-  // Writes to the replica set. Succeeds only once W replicas acknowledge.
   StatusOr<ObjectMetadata> Put(const std::string& key, const std::string& data);
 
-  // Conditional, idempotent write across the replica set (spec Milestone 5).
-  // The assigned version is a pure function of expected_version
-  // (expected_version + 1), so a retry with the same request_id and expectation
-  // is naturally idempotent. Returns kConflict if a quorum of acks cannot be
-  // reached because replicas reject the expected version.
   StatusOr<ObjectMetadata> PutConditional(const std::string& key, const std::string& data,
                                           uint64_t expected_version, const std::string& request_id);
 
-  // Reads from the first replica that returns checksum-valid data.
   StatusOr<std::string> Get(const std::string& key);
-
-  // Tombstones the object across the replica set (quorum of acks required).
   Status Delete(const std::string& key);
 
-  // Snapshot of last-known replica health (for metrics / debugging).
   std::map<std::string, ReplicaHealth> ReplicaHealthSnapshot() const;
 
 private:
   StorageNodeClient* ClientFor(const std::string& node_id);
-  uint64_t NextVersion(const std::string& key, const std::vector<std::string>& replicas);
   void MarkHealth(const std::string& node_id, ReplicaHealth h);
 
-  ClusterMap cluster_;
+  std::shared_ptr<MetadataView> metadata_;
   std::map<std::string, std::shared_ptr<StorageNodeClient>> clients_;
   Options opts_;
 

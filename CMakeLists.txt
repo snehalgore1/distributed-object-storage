@@ -45,10 +45,10 @@ find_program(GRPC_CPP_PLUGIN grpc_cpp_plugin REQUIRED)
 set(PROTO_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/proto)
 set(PROTO_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/gen)
 set(PROTO_GEN
-  ${PROTO_GEN_DIR}/storage.pb.cc
-  ${PROTO_GEN_DIR}/storage.pb.h
-  ${PROTO_GEN_DIR}/storage.grpc.pb.cc
-  ${PROTO_GEN_DIR}/storage.grpc.pb.h)
+  ${PROTO_GEN_DIR}/storage.pb.cc  ${PROTO_GEN_DIR}/storage.pb.h
+  ${PROTO_GEN_DIR}/storage.grpc.pb.cc  ${PROTO_GEN_DIR}/storage.grpc.pb.h
+  ${PROTO_GEN_DIR}/metadata.pb.cc  ${PROTO_GEN_DIR}/metadata.pb.h
+  ${PROTO_GEN_DIR}/metadata.grpc.pb.cc  ${PROTO_GEN_DIR}/metadata.grpc.pb.h)
 add_custom_command(
   OUTPUT ${PROTO_GEN}
   COMMAND ${CMAKE_COMMAND} -E make_directory ${PROTO_GEN_DIR}
@@ -57,14 +57,16 @@ add_custom_command(
     --cpp_out=${PROTO_GEN_DIR}
     --grpc_out=${PROTO_GEN_DIR}
     --plugin=protoc-gen-grpc=${GRPC_CPP_PLUGIN}
-    ${PROTO_SRC_DIR}/storage.proto
-  DEPENDS ${PROTO_SRC_DIR}/storage.proto
-  COMMENT "Generating gRPC/protobuf code from storage.proto"
+    ${PROTO_SRC_DIR}/storage.proto ${PROTO_SRC_DIR}/metadata.proto
+  DEPENDS ${PROTO_SRC_DIR}/storage.proto ${PROTO_SRC_DIR}/metadata.proto
+  COMMENT "Generating gRPC/protobuf code from proto/*.proto"
   VERBATIM)
 
 # dos_proto: generated code only. Not built with the strict warning policy since
 # generated sources are not ours to lint.
-add_library(dos_proto ${PROTO_GEN_DIR}/storage.pb.cc ${PROTO_GEN_DIR}/storage.grpc.pb.cc)
+add_library(dos_proto
+  ${PROTO_GEN_DIR}/storage.pb.cc ${PROTO_GEN_DIR}/storage.grpc.pb.cc
+  ${PROTO_GEN_DIR}/metadata.pb.cc ${PROTO_GEN_DIR}/metadata.grpc.pb.cc)
 target_include_directories(dos_proto PUBLIC ${PROTO_GEN_DIR})
 target_link_libraries(dos_proto PUBLIC PkgConfig::GRPCPP PkgConfig::PROTOBUF Threads::Threads)
 
@@ -81,6 +83,7 @@ add_library(dos_core
   src/cluster/consistent_hash_ring.cc
   src/cluster/cluster_map.cc
   src/cluster/failure_detector.cc
+  src/cluster/metadata_repository.cc
   src/storage/sqlite_metadata_store.cc
   src/storage/wal.cc
   src/storage/local_object_store.cc)
@@ -97,7 +100,9 @@ add_library(dos_rpc
   src/network/storage_node_server.cc
   src/network/storage_node_client.cc
   src/network/coordinator.cc
-  src/network/repairer.cc)
+  src/network/repairer.cc
+  src/network/metadata_server.cc
+  src/network/metadata_client.cc)
 target_include_directories(dos_rpc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(dos_rpc PUBLIC dos_core dos_proto PRIVATE dos_warnings)
 
@@ -110,6 +115,9 @@ target_link_libraries(rebalance_bench PRIVATE dos_core dos_warnings)
 
 add_executable(dos_node tools/node/node_main.cc)
 target_link_libraries(dos_node PRIVATE dos_rpc dos_warnings)
+
+add_executable(dos_metadata tools/metadata/metadata_main.cc)
+target_link_libraries(dos_metadata PRIVATE dos_rpc dos_warnings)
 
 add_executable(micro_bench tools/bench/micro_bench.cc)
 target_link_libraries(micro_bench PRIVATE dos_core dos_warnings)
@@ -131,12 +139,14 @@ if(BUILD_TESTING)
     tests/unit/versioning_test.cc
     tests/unit/failure_detector_test.cc
     tests/unit/wal_test.cc
-    tests/unit/crash_recovery_test.cc)
+    tests/unit/crash_recovery_test.cc
+    tests/unit/metadata_repository_test.cc)
   target_link_libraries(dos_unit_tests PRIVATE dos_core dos_warnings GTest::gtest_main)
   gtest_discover_tests(dos_unit_tests)
 
   add_executable(dos_integration_tests
-    tests/integration/replication_test.cc)
+    tests/integration/replication_test.cc
+    tests/integration/metadata_split_test.cc)
   target_link_libraries(dos_integration_tests PRIVATE dos_rpc dos_warnings GTest::gtest_main)
   gtest_discover_tests(dos_integration_tests)
 endif()

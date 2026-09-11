@@ -1,6 +1,7 @@
 #include "network/coordinator.h"
 
 #include <future>
+#include <utility>
 
 #include "common/sha256.h"
 
@@ -18,10 +19,10 @@ const char* ReplicaHealthName(ReplicaHealth h) {
   return "UNKNOWN";
 }
 
-Coordinator::Coordinator(ClusterMap cluster,
+Coordinator::Coordinator(std::shared_ptr<MetadataView> metadata,
                          std::map<std::string, std::shared_ptr<StorageNodeClient>> clients,
                          Options opts)
-    : cluster_(std::move(cluster)), clients_(std::move(clients)), opts_(opts) {
+    : metadata_(std::move(metadata)), clients_(std::move(clients)), opts_(opts) {
   for (const auto& [id, client] : clients_) {
     health_[id] = ReplicaHealth::kHealthy;
   }
@@ -37,32 +38,18 @@ void Coordinator::MarkHealth(const std::string& node_id, ReplicaHealth h) {
   health_[node_id] = h;
 }
 
-// Determines the next version by taking the max committed version seen across
-// the replicas plus one. Replicas that don't answer are simply ignored here;
-// the write path below still needs a quorum to commit.
-uint64_t Coordinator::NextVersion(const std::string& key,
-                                  const std::vector<std::string>& replicas) {
-  uint64_t max_version = 0;
-  for (const auto& node_id : replicas) {
-    StorageNodeClient* client = ClientFor(node_id);
-    if (client == nullptr) {
-      continue;
-    }
-    auto head = client->Head(key);
-    if (head.ok()) {
-      max_version = std::max(max_version, head.value().version);
-    }
-  }
-  return max_version + 1;
-}
-
 StatusOr<ObjectMetadata> Coordinator::Put(const std::string& key, const std::string& data) {
-  const std::vector<std::string> replicas = cluster_.PlacementFor(key, opts_.replication_factor);
+  const std::vector<std::string> replicas = metadata_->PlacementFor(key, opts_.replication_factor);
   if (replicas.size() < opts_.write_quorum) {
     return Status::Unavailable("cluster too small to satisfy write quorum");
   }
 
-  const uint64_t version = NextVersion(key, replicas);
+  // The metadata service is the version authority.
+  uint64_t version = 1;
+  auto current = metadata_->LookupObject(key);
+  if (current.ok()) {
+    version = current.value().version + 1;
+  }
 
   // Fan out writes in parallel; each future yields (node_id, ok).
   std::vector<std::future<std::pair<std::string, bool>>> futures;
@@ -73,26 +60,24 @@ StatusOr<ObjectMetadata> Coordinator::Put(const std::string& key, const std::str
       if (client == nullptr) {
         return std::make_pair(node_id, false);
       }
-      Status s = client->Put(key, data, version).status();
-      return std::make_pair(node_id, s.ok());
+      return std::make_pair(node_id, client->Put(key, data, version).status().ok());
     }));
   }
 
-  std::size_t acks = 0;
-  for (auto& f : futures) {
-    auto [node_id, ok] = f.get();
-    if (ok) {
-      ++acks;
-      MarkHealth(node_id, ReplicaHealth::kHealthy);
-    } else {
-      // Wrote to a quorum elsewhere but not here -> this replica lags and is a
-      // repair candidate (Milestone 6 acts on this).
-      MarkHealth(node_id, ReplicaHealth::kLagging);
-    }
+  std::vector<std::string> acked; // in placement order
+  std::vector<bool> ok_by_index(replicas.size(), false);
+  for (std::size_t i = 0; i < futures.size(); ++i) {
+    auto [node_id, ok] = futures[i].get();
+    ok_by_index[i] = ok;
+    MarkHealth(node_id, ok ? ReplicaHealth::kHealthy : ReplicaHealth::kLagging);
+  }
+  for (std::size_t i = 0; i < replicas.size(); ++i) {
+    if (ok_by_index[i])
+      acked.push_back(replicas[i]);
   }
 
-  if (acks < opts_.write_quorum) {
-    return Status::Unavailable("write quorum not met: " + std::to_string(acks) + "/" +
+  if (acked.size() < opts_.write_quorum) {
+    return Status::Unavailable("write quorum not met: " + std::to_string(acked.size()) + "/" +
                                std::to_string(opts_.write_quorum) + " acks");
   }
 
@@ -102,6 +87,18 @@ StatusOr<ObjectMetadata> Coordinator::Put(const std::string& key, const std::str
   meta.checksum = Sha256Hex(data);
   meta.version = version;
   meta.deleted = false;
+
+  ObjectLocation loc;
+  loc.key = key;
+  loc.version = version;
+  loc.checksum = meta.checksum;
+  loc.size = meta.size;
+  loc.deleted = false;
+  loc.replicas = acked;
+  Status reg = metadata_->RegisterObject(loc);
+  if (!reg.ok()) {
+    return reg;
+  }
   return meta;
 }
 
@@ -109,13 +106,10 @@ StatusOr<ObjectMetadata> Coordinator::PutConditional(const std::string& key,
                                                      const std::string& data,
                                                      uint64_t expected_version,
                                                      const std::string& request_id) {
-  const std::vector<std::string> replicas = cluster_.PlacementFor(key, opts_.replication_factor);
+  const std::vector<std::string> replicas = metadata_->PlacementFor(key, opts_.replication_factor);
   if (replicas.size() < opts_.write_quorum) {
     return Status::Unavailable("cluster too small to satisfy write quorum");
   }
-
-  // The version is fully determined by the expectation, so every replica (and
-  // every retry) computes the same version -> no drift, retries are idempotent.
   const uint64_t version = expected_version + 1;
 
   std::vector<std::future<std::pair<std::string, StatusCode>>> futures;
@@ -132,30 +126,39 @@ StatusOr<ObjectMetadata> Coordinator::PutConditional(const std::string& key,
     }));
   }
 
-  std::size_t acks = 0;
+  std::vector<std::string> acked;
+  std::vector<StatusCode> code_by_index(replicas.size(), StatusCode::kUnavailable);
   bool saw_conflict = false;
-  for (auto& f : futures) {
-    auto [node_id, code] = f.get();
-    if (code == StatusCode::kOk) {
-      ++acks;
-      MarkHealth(node_id, ReplicaHealth::kHealthy);
-    } else {
-      if (code == StatusCode::kConflict) {
-        saw_conflict = true;
-      }
-      MarkHealth(node_id,
-                 code == StatusCode::kConflict ? ReplicaHealth::kHealthy : ReplicaHealth::kLagging);
-    }
+  for (std::size_t i = 0; i < futures.size(); ++i) {
+    auto [node_id, code] = futures[i].get();
+    code_by_index[i] = code;
+    if (code == StatusCode::kConflict)
+      saw_conflict = true;
+    MarkHealth(node_id, code == StatusCode::kOk         ? ReplicaHealth::kHealthy
+                        : code == StatusCode::kConflict ? ReplicaHealth::kHealthy
+                                                        : ReplicaHealth::kLagging);
+  }
+  for (std::size_t i = 0; i < replicas.size(); ++i) {
+    if (code_by_index[i] == StatusCode::kOk)
+      acked.push_back(replicas[i]);
   }
 
-  if (acks >= opts_.write_quorum) {
+  if (acked.size() >= opts_.write_quorum) {
     ObjectMetadata meta;
     meta.key = key;
     meta.size = data.size();
     meta.checksum = Sha256Hex(data);
     meta.version = version;
-    meta.deleted = false;
     meta.request_id = request_id;
+    ObjectLocation loc;
+    loc.key = key;
+    loc.version = version;
+    loc.checksum = meta.checksum;
+    loc.size = meta.size;
+    loc.replicas = acked;
+    Status reg = metadata_->RegisterObject(loc);
+    if (!reg.ok())
+      return reg;
     return meta;
   }
   if (saw_conflict) {
@@ -166,9 +169,13 @@ StatusOr<ObjectMetadata> Coordinator::PutConditional(const std::string& key,
 }
 
 StatusOr<std::string> Coordinator::Get(const std::string& key) {
-  const std::vector<std::string> replicas = cluster_.PlacementFor(key, opts_.replication_factor);
+  auto loc = metadata_->LookupObject(key);
+  if (!loc.ok()) {
+    return loc.status(); // kNotFound if absent/tombstoned
+  }
+  const std::vector<std::string>& replicas = loc.value().replicas;
   if (replicas.empty()) {
-    return Status::Unavailable("no replicas for key");
+    return Status::Unavailable("no replicas recorded for key");
   }
 
   Status last = Status::NotFound("object not found on any replica: " + key);
@@ -183,23 +190,17 @@ StatusOr<std::string> Coordinator::Get(const std::string& key) {
       return data; // node already verified the checksum
     }
     last = data.status();
-    // Integrity failure or unreachable: fall through to the next replica.
-    if (data.status().code() == StatusCode::kUnavailable ||
-        data.status().code() == StatusCode::kChecksumMismatch) {
-      MarkHealth(node_id, data.status().code() == StatusCode::kUnavailable
-                              ? ReplicaHealth::kFailed
-                              : ReplicaHealth::kLagging);
+    if (data.status().code() == StatusCode::kUnavailable) {
+      MarkHealth(node_id, ReplicaHealth::kFailed);
+    } else if (data.status().code() == StatusCode::kChecksumMismatch) {
+      MarkHealth(node_id, ReplicaHealth::kLagging);
     }
   }
   return last;
 }
 
 Status Coordinator::Delete(const std::string& key) {
-  const std::vector<std::string> replicas = cluster_.PlacementFor(key, opts_.replication_factor);
-  if (replicas.size() < opts_.write_quorum) {
-    return Status::Unavailable("cluster too small to satisfy quorum");
-  }
-
+  const std::vector<std::string> replicas = metadata_->PlacementFor(key, opts_.replication_factor);
   std::size_t acks = 0;
   for (const auto& node_id : replicas) {
     StorageNodeClient* client = ClientFor(node_id);
@@ -207,7 +208,6 @@ Status Coordinator::Delete(const std::string& key) {
       continue;
     }
     Status s = client->Delete(key);
-    // OK (tombstoned) or NotFound (already absent) both count as success.
     if (s.ok() || s.code() == StatusCode::kNotFound) {
       ++acks;
       MarkHealth(node_id, ReplicaHealth::kHealthy);
@@ -218,7 +218,7 @@ Status Coordinator::Delete(const std::string& key) {
   if (acks < opts_.write_quorum) {
     return Status::Unavailable("delete quorum not met");
   }
-  return Status::Ok();
+  return metadata_->RemoveObject(key);
 }
 
 std::map<std::string, ReplicaHealth> Coordinator::ReplicaHealthSnapshot() const {

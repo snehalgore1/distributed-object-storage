@@ -12,8 +12,10 @@ performance engineering.
 > (`expected_version` → `CONFLICT`, `request_id` dedup), **failure detection +
 > anti-entropy repair** (heartbeat state machine; a rejoining node is repaired
 > back to full redundancy), and a **write-ahead log with crash recovery**
-> (interrupted writes are completed or discarded on restart). Extended layers
-> (metadata-service split, cache/HTTP gateway, observability, Docker/K8s) are next.
+> (interrupted writes are completed or discarded on restart), and a **metadata /
+> control-plane split** (placement and the object→replica map live behind a
+> `Metadata` gRPC service; payloads never touch it). Extended layers
+> (cache/HTTP gateway, observability, Docker/K8s) are next.
 
 ## See it fail over
 
@@ -90,6 +92,12 @@ write-ahead log + SHA-256 integrity. See [docs/architecture.md](docs/architectur
   fsync'd) before it becomes visible; on restart, interrupted writes are
   completed (if the payload is durable and intact) or discarded — idempotently.
   A torn WAL tail is detected and ignored.
+- **Control/data-plane split**: a `Metadata` gRPC service owns cluster
+  membership, consistent-hash placement, and the object→replica-set map behind a
+  `MetadataView` interface. The coordinator asks *where* to write, writes bytes
+  to storage nodes under a quorum, and registers the replica set back — **object
+  payloads never pass through the metadata service** (its records carry version,
+  checksum, size, and replica ids only).
 
 ## Build & test
 
@@ -186,14 +194,15 @@ clear optimization targets (batch/group-commit; a hardware-accelerated hash).
 ## Layout
 
 ```
-proto/    storage.proto (gRPC StorageNode service)
+proto/    storage.proto (StorageNode) · metadata.proto (Metadata control plane)
 include/  common/ (status, sha256, hash, digest, thread_pool)
-          cluster/ (consistent_hash_ring, cluster_map, failure_detector)
+          cluster/ (consistent_hash_ring, cluster_map, failure_detector,
+                    metadata_view, metadata_repository)
           storage/ (object_store, local_object_store, sqlite_metadata_store, wal)
-          network/ (storage_node_server/client, coordinator, repairer)
+          network/ (storage_node_*, metadata_server/client, coordinator, repairer)
 src/      implementations mirroring include/
-tests/    unit/ (GoogleTest) · integration/ (in-process gRPC cluster)
-tools/    demo/ (storage_demo, cluster_demo) · node/ (dos_node)
+tests/    unit/ (GoogleTest) · integration/ (in-process gRPC cluster + metadata)
+tools/    demo/ (storage_demo, cluster_demo) · node/ (dos_node) · metadata/ (dos_metadata)
           bench/ (micro_bench) · clusterbench/ (rebalance_bench)
 docs/     architecture, storage-engine, consistency, protocol, failure-model
 ```
@@ -222,7 +231,7 @@ docs/     architecture, storage-engine, consistency, protocol, failure-model
 | ✅ M5 | Versioning & idempotency (conditional PUT → CONFLICT, request-id dedup) |
 | ✅ M6 | Failure detection (heartbeat FSM) + anti-entropy replica repair |
 | ✅ M7 | Write-ahead log + crash recovery (interrupted writes completed/discarded) |
-| M8 | Metadata service / control-plane split |
+| ✅ M8 | Metadata / control-plane split (placement + object→replica map behind a gRPC service) |
 | M9 | LRU cache + HTTP gateway + CLI |
 | M10 | Observability (Prometheus + Grafana, structured logs) |
 | M11 | Docker Compose |

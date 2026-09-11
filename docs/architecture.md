@@ -1,8 +1,7 @@
 # Architecture
 
-> Status: this document describes the target architecture. The current codebase
-> implements **Milestone 0** (build/test foundation) and **Milestone 1**
-> (single-node storage engine). Distributed layers are planned.
+> Status: current through **Milestone 8** — the control/data-plane split is real.
+> Later layers (cache/HTTP gateway, observability, deployment) are planned.
 
 ## Design principle: separate control plane from data plane
 
@@ -10,10 +9,21 @@
   which version is current?"*
 - The **data plane** (storage nodes) answers *"give me the bytes."*
 
-In Milestone 1 both live in one process: `LocalObjectStore` (data plane) writing
-payloads to the filesystem, and `SqliteMetadataStore` (metadata plane) behind
-the `MetadataStore` interface. That interface is the seam along which the two
-planes are split into separate services in Milestone 8.
+**Milestone 8** makes this split concrete. The control plane is the
+[`Metadata`](../proto/metadata.proto) gRPC service — a `MetadataRepository`
+(membership + consistent-hash placement + the object→replica-set map) behind the
+`MetadataView` interface. The coordinator holds no placement itself: it asks the
+metadata service *where* to write, writes bytes to the data-plane `StorageNode`
+services under a quorum, then *registers* the resulting replica set back with the
+metadata service. Reads ask the metadata service for the replica set, then fetch
+bytes from a storage node. **Object payloads never pass through the metadata
+service** — its `ObjectLocation` records carry version, checksum, size, and
+replica ids only.
+
+`MetadataView` has two implementations, so the same coordinator code runs
+against an in-process repository (tests) or the remote gRPC service
+(`RemoteMetadataView`) unchanged. Each storage node still keeps its own local
+`SqliteMetadataStore` for the objects it physically holds.
 
 ## Target topology
 
@@ -34,24 +44,34 @@ planes are split into separate services in Milestone 8.
 
 Each storage node = filesystem + WAL + checksums + local metadata + metrics.
 
-## Current components (M0 + M1)
+## Components
 
-| Component            | Header                                | Responsibility                              |
-|----------------------|---------------------------------------|---------------------------------------------|
-| `ObjectStore`        | `include/storage/object_store.h`      | PUT/GET/HEAD/DELETE/LIST contract           |
-| `LocalObjectStore`   | `include/storage/local_object_store.h`| Filesystem-backed store, atomic durable PUT |
-| `MetadataStore`      | `include/storage/metadata_store.h`    | Metadata persistence interface (the seam)   |
-| `SqliteMetadataStore`| `include/storage/sqlite_metadata_store.h` | SQLite implementation of the above      |
-| `Sha256` / `digest`  | `include/common/`                     | Content checksums and key→path placement    |
-| `Status` / `StatusOr`| `include/common/status.h`             | Error propagation without exceptions        |
+| Component | Header | Responsibility |
+|-----------|--------|----------------|
+| **Data plane** | | |
+| `ObjectStore` / `LocalObjectStore` | `storage/` | PUT/GET/HEAD/DELETE/LIST; atomic durable writes + WAL |
+| `SqliteMetadataStore` | `storage/sqlite_metadata_store.h` | per-node metadata for objects that node holds |
+| `Wal` | `storage/wal.h` | write-ahead log + crash recovery |
+| `StorageNode` service | `network/storage_node_*` | gRPC data-plane server/client |
+| **Control plane** | | |
+| `MetadataView` | `cluster/metadata_view.h` | placement + object→replica-set interface |
+| `MetadataRepository` | `cluster/metadata_repository.h` | in-process authoritative impl (membership, ring, locations) |
+| `Metadata` service | `network/metadata_*` | gRPC control-plane server/client (`RemoteMetadataView`) |
+| `ConsistentHashRing` / `ClusterMap` | `cluster/` | virtual-node placement, membership |
+| `FailureDetector` | `cluster/failure_detector.h` | heartbeat state machine |
+| **Orchestration** | | |
+| `Coordinator` | `network/coordinator.h` | quorum write / fallback read across replicas |
+| `Repairer` | `network/repairer.h` | anti-entropy repair from authoritative metadata |
+| **Common** | | |
+| `Sha256` / `hash` / `digest` | `common/` | checksums, stable 64-bit hash, key→path |
+| `ThreadPool` | `common/thread_pool.h` | bounded-queue worker pool |
+| `Status` / `StatusOr` | `common/status.h` | error propagation without exceptions |
 
-See [storage-engine.md](storage-engine.md) for the durability contract and
-crash behavior.
+See [storage-engine.md](storage-engine.md), [protocol.md](protocol.md), and
+[failure-model.md](failure-model.md) for detail.
 
 ## Roadmap
 
-M2 concurrency (thread pool, sharded locks) · M3 cluster + consistent hashing ·
-M4 replication + quorum · M5 versioning/idempotency · M6 failure detection +
-repair · M7 payload WAL + crash recovery · M8 metadata service split ·
-M9 cache + HTTP gateway · M10 observability · M11 Docker · M12 Kubernetes ·
-M13 performance · M14 chaos · M15 (optional) Raft.
+✅ M0–M8 (core + metadata-service split). Remaining: M9 cache + HTTP gateway ·
+M10 observability · M11 Docker · M12 Kubernetes · M13 performance · M14 chaos ·
+M15 (optional) Raft.

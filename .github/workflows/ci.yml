@@ -63,6 +63,6 @@ jobs:
       # store, coordinator) is fully covered by the unit-test ConcurrencyTest
       # suite, which does run here.
       - name: Test (TSan, excluding gRPC integration tests)
-        run: ctest --test-dir build-tsan --output-on-failure -E '^ReplicationTest'
+        run: ctest --test-dir build-tsan --output-on-failure -E 'ReplicationTest|MetadataSplitTest'
         env:
           TSAN_OPTIONS: halt_on_error=1

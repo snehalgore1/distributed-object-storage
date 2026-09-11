@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "cluster/cluster_map.h"
+#include "cluster/metadata_repository.h"
 #include "network/coordinator.h"
 #include "network/repairer.h"
 #include "network/storage_node_client.h"
@@ -54,7 +55,7 @@ int main() {
   fs::remove_all(root, ec);
 
   std::vector<std::unique_ptr<Node>> nodes;
-  dos::ClusterMap cluster(150);
+  auto metadata = std::make_shared<dos::MetadataRepository>(150);
   std::map<std::string, std::shared_ptr<dos::StorageNodeClient>> clients;
 
   std::cout << "\033[1mDistributed Object Store — live failover demo\033[0m\n";
@@ -70,12 +71,12 @@ int main() {
     dos::NodeInfo info;
     info.id = id;
     info.address = node->address;
-    cluster.AddOrUpdateNode(info);
+    metadata->AddNode(info);
     clients[id] = std::make_shared<dos::StorageNodeClient>(node->address);
     Info(id + " listening on " + node->address);
     nodes.push_back(std::move(node));
   }
-  dos::Coordinator coordinator(cluster, clients, {});
+  dos::Coordinator coordinator(metadata, clients, {});
 
   Step("PUT photos/sunset.jpg");
   auto put = coordinator.Put("photos/sunset.jpg", "<3.2 MB of pixels>");
@@ -107,7 +108,7 @@ int main() {
   Info("node-c is UP again — but it missed logs/app.log while it was gone");
 
   Step("Anti-entropy repair of node-c");
-  dos::Repairer repairer(cluster, clients, 3);
+  dos::Repairer repairer(metadata, clients, 3);
   auto report = repairer.RepairNode("node-c");
   Info("copied " + std::to_string(report.value().copied) + ", already current " +
        std::to_string(report.value().already_current) + ", failed " +

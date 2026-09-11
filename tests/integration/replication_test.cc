@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "cluster/cluster_map.h"
+#include "cluster/metadata_repository.h"
 #include "common/digest.h"
 #include "network/coordinator.h"
 #include "network/repairer.h"
@@ -41,6 +42,7 @@ protected:
             ("dos_repl_" + std::to_string(reinterpret_cast<uintptr_t>(this)));
     fs::remove_all(root_);
 
+    repo_ = std::make_shared<MetadataRepository>(150);
     const std::vector<std::string> ids = {"node-a", "node-b", "node-c"};
     for (const auto& id : ids) {
       auto node = std::make_unique<Node>();
@@ -56,14 +58,14 @@ protected:
       NodeInfo info;
       info.id = id;
       info.address = node->address;
-      cluster_.AddOrUpdateNode(info);
+      repo_->AddNode(info);
       clients_[id] =
           std::make_shared<StorageNodeClient>(node->address, std::chrono::milliseconds(300));
       nodes_.push_back(std::move(node));
     }
 
     Coordinator::Options opts; // RF=3, W=2
-    coordinator_ = std::make_unique<Coordinator>(cluster_, clients_, opts);
+    coordinator_ = std::make_unique<Coordinator>(repo_, clients_, opts);
   }
 
   void TearDown() override {
@@ -128,7 +130,7 @@ protected:
 
   fs::path root_;
   std::vector<std::unique_ptr<Node>> nodes_;
-  ClusterMap cluster_{150};
+  std::shared_ptr<MetadataRepository> repo_;
   std::map<std::string, std::shared_ptr<StorageNodeClient>> clients_;
   std::unique_ptr<Coordinator> coordinator_;
 };
@@ -184,16 +186,9 @@ TEST_F(ReplicationTest, WriteFailsQuorumWithTwoReplicasDown) {
 TEST_F(ReplicationTest, ReadFallsBackOnChecksumMismatch) {
   ASSERT_TRUE(coordinator_->Put("doc", "trusted-content").ok());
 
-  // Corrupt the copy on whichever node is primary for this key.
-  ClusterMap probe(150);
-  // Rebuild placement identically to find the primary id.
-  for (auto& n : nodes_) {
-    NodeInfo info;
-    info.id = n->id;
-    info.address = n->address;
-    probe.AddOrUpdateNode(info);
-  }
-  const std::string primary = probe.PrimaryFor("doc");
+  // Corrupt the copy on whichever node is primary for this key (the first
+  // replica the coordinator will try).
+  const std::string primary = repo_->PlacementFor("doc", 3).front();
   ASSERT_FALSE(primary.empty());
   CorruptObjectOnNode(primary, "doc");
 
@@ -262,7 +257,7 @@ TEST_F(ReplicationTest, RepairRestoresRedundancyAfterNodeRejoin) {
   ASSERT_EQ(c->store->Head("k7").status().code(), StatusCode::kNotFound);
 
   // Anti-entropy repair pulls the missing objects from healthy peers.
-  Repairer repairer(cluster_, clients_, /*replication_factor=*/3);
+  Repairer repairer(repo_, clients_, /*replication_factor=*/3);
   auto report = repairer.RepairNode("node-c");
   ASSERT_TRUE(report.ok()) << report.status().ToString();
   EXPECT_EQ(report.value().copied, 5u);          // k5..k9 restored

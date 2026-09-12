@@ -4,7 +4,7 @@ A fault-tolerant distributed object storage system in C++20 — built systems-fi
 to demonstrate concurrency, storage durability, distributed coordination, and
 performance engineering.
 
-> **Status:** Milestones 0–7 complete — the CORE tier. A concurrent single-node
+> **Status:** Milestones 0–15 complete. A concurrent single-node
 > storage engine (checksums, atomic durable writes, versioning, SQLite metadata,
 > bounded-queue thread pool, sharded locking — TSan-clean), a consistent-hash
 > **placement** layer, **replication over gRPC** (RF=3 / W=2 quorum,
@@ -20,7 +20,10 @@ performance engineering.
 > `/metrics`, Grafana dashboard), a **one-command Docker Compose stack**
 > (nodes + metadata + gateway + Prometheus + Grafana), and **Kubernetes**
 > manifests (StatefulSet storage nodes with PVCs, Deployments, probes) validated
-> on kind. This is a complete build of the spec's Core + Extended tiers.
+> on kind, and a **Raft-replicated metadata control plane** (leader election,
+> disk-persisted log, majority commit, follower catch-up, leader failover — the
+> control plane is no longer a single point of failure). This is a complete build
+> of the spec's Core, Extended, and Optional tiers.
 
 ## See it fail over
 
@@ -297,7 +300,7 @@ docs/     architecture, storage-engine, consistency, protocol, failure-model
 | ✅ M12 | Kubernetes: StatefulSet nodes + PVCs, Deployments, probes (kind-validated) |
 | ✅ M13 | Performance engineering: load generator + measured concurrency/RF/cache experiments |
 | ✅ M14 | Failure & chaos testing (fault injection under load + live chaos runner) |
-| M15 | (Optional) Raft metadata coordination |
+| ✅ M15 | Raft metadata coordination: leader election, disk-persisted replicated log, majority commit, follower catch-up, leader failover ([docs/consensus.md](docs/consensus.md)) |
 
 ## License
 

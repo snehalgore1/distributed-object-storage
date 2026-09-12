@@ -63,7 +63,7 @@ jobs:
       # store, coordinator) is fully covered by the unit-test ConcurrencyTest
       # suite, which does run here.
       - name: Test (TSan, excluding gRPC integration tests)
-        run: ctest --test-dir build-tsan --output-on-failure -E 'ReplicationTest|MetadataSplitTest|HttpGatewayTest|ChaosTest'
+        run: ctest --test-dir build-tsan --output-on-failure -E 'ReplicationTest|MetadataSplitTest|HttpGatewayTest|ChaosTest|RaftForwardingTest'
 
   docker-image:
     runs-on: ubuntu-latest

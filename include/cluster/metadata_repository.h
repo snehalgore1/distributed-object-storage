@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "cluster/cluster_map.h"
+#include "cluster/control_plane.h"
 #include "cluster/metadata_view.h"
 #include "cluster/node_info.h"
 
@@ -21,14 +22,14 @@ namespace dos {
 //
 // This is the in-process implementation of MetadataView; the Metadata gRPC
 // service wraps one of these, and RemoteMetadataView talks to that service.
-class MetadataRepository : public MetadataView {
+class MetadataRepository : public ControlPlane {
 public:
   explicit MetadataRepository(std::size_t virtual_nodes_per_node = 150)
       : cluster_(virtual_nodes_per_node) {}
 
   // Membership admin (control-plane configuration).
-  void AddNode(const NodeInfo& node);
-  std::vector<NodeInfo> Nodes() const;
+  void AddNode(const NodeInfo& node) override;
+  std::vector<NodeInfo> Nodes() const override;
 
   std::vector<std::string> PlacementFor(std::string_view key, std::size_t rf) override;
   Status RegisterObject(const ObjectLocation& loc) override;

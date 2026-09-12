@@ -92,6 +92,44 @@ curl http://localhost:30080/objects/greeting   # still returns "hi"
 
 Tear down: `kind delete cluster --name dos`.
 
+## Highly-available control plane (Raft — Milestone 15)
+
+By default the metadata control plane is a single process. To run it as a
+**three-node Raft group** — so a metadata leader failure loses nothing and
+writes continue after a new leader is elected — use the Raft variants. A write
+that lands on a follower is forwarded to the leader, so clients (the gateway)
+can target any replica. See [consensus.md](consensus.md) for the design.
+
+**Docker Compose:**
+
+```sh
+docker compose -f deploy/compose/docker-compose.raft.yml up --build
+```
+
+This replaces the single `metadata` service with `metadata-a/b/c`, each with a
+durable volume for its Raft log. Kill the current leader and watch a survivor
+take over while writes keep working:
+
+```sh
+docker compose -f deploy/compose/docker-compose.raft.yml logs metadata-a metadata-b metadata-c \
+  | grep raft_leader_elected            # find the leader
+docker compose -f deploy/compose/docker-compose.raft.yml stop metadata-a   # if it's the leader
+curl -X PUT --data-binary "still-works" http://localhost:8080/objects/k     # succeeds via the new leader
+```
+
+**Kubernetes** — a `dos-metadata` StatefulSet (3 replicas, per-pod PVC for the
+Raft log, pod name = Raft id). It ships under `optional/` so the default apply
+uses the simple single-node metadata; swap it in:
+
+```sh
+kubectl delete -f deploy/kubernetes/20-metadata.yaml
+kubectl apply  -f deploy/kubernetes/optional/metadata-raft.yaml
+kubectl -n dos rollout status statefulset/dos-metadata
+```
+
+The scripted local demo (no containers) is
+[`tools/demo/raft_cluster_demo.sh`](../tools/demo/raft_cluster_demo.sh).
+
 ## Configuration
 
 Services are configured by their `command:` flags in the compose file

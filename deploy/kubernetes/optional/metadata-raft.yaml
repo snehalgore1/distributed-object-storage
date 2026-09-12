@@ -1,0 +1,99 @@
+# Raft-replicated control plane as a StatefulSet (spec Milestone 15) — the
+# highly-available alternative to the single-replica Deployment in
+# ../20-metadata.yaml. It lives in this optional/ subdirectory so the default
+# `kubectl apply -f deploy/kubernetes/` (non-recursive) uses the simple
+# single-node metadata; opt into HA by swapping it in (both share the Service
+# name `dos-metadata`, so the gateway config in 00-config.yaml is unchanged):
+#
+#   kubectl delete -f deploy/kubernetes/20-metadata.yaml          # remove the Deployment
+#   kubectl apply  -f deploy/kubernetes/optional/metadata-raft.yaml  # 3-node Raft group
+#
+# Each pod (dos-metadata-0/1/2) gets stable DNS via the headless Service and a
+# per-pod PVC for its Raft log, so no committed metadata is lost across a leader
+# failure or restart. The pod name is the Raft node id. A write that reaches a
+# follower is forwarded to the leader, so the gateway can target any replica.
+apiVersion: v1
+kind: Service
+metadata:
+  name: dos-metadata
+  namespace: dos
+spec:
+  clusterIP: None  # headless: stable per-pod DNS dos-metadata-<n>.dos-metadata
+  selector:
+    app: dos-metadata
+  ports:
+    - name: grpc
+      port: 9000
+    - name: raft
+      port: 9100
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: dos-metadata
+  namespace: dos
+spec:
+  serviceName: dos-metadata
+  replicas: 3
+  podManagementPolicy: Parallel  # peers can come up together and discover each other
+  selector:
+    matchLabels:
+      app: dos-metadata
+  template:
+    metadata:
+      labels:
+        app: dos-metadata
+    spec:
+      containers:
+        - name: metadata
+          image: dos:latest
+          imagePullPolicy: IfNotPresent
+          # Derive peer flags from the pod ordinal; the pod name is the Raft id.
+          command: ["bash", "-c"]
+          args:
+            - |
+              set -e
+              ORD="${POD_NAME##*-}"
+              PEERS=""
+              for i in 0 1 2; do
+                [ "$i" = "$ORD" ] && continue
+                PEERS="$PEERS --raft-peer dos-metadata-$i=dos-metadata-$i.dos-metadata:9100"
+                PEERS="$PEERS --peer-meta dos-metadata-$i=dos-metadata-$i.dos-metadata:9000"
+              done
+              exec dos_metadata --id "$POD_NAME" \
+                --address 0.0.0.0:9000 --raft-address 0.0.0.0:9100 --raft-dir /raft \
+                $PEERS $NODE_ARGS
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NODE_ARGS
+              valueFrom:
+                configMapKeyRef:
+                  name: dos-config
+                  key: NODE_ARGS
+          ports:
+            - name: grpc
+              containerPort: 9000
+            - name: raft
+              containerPort: 9100
+          readinessProbe:
+            tcpSocket: { port: 9000 }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: { port: 9000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: raft
+              mountPath: /raft
+  volumeClaimTemplates:
+    - metadata:
+        name: raft
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

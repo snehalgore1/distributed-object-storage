@@ -47,7 +47,9 @@ set(PROTO_GEN
   ${PROTO_GEN_DIR}/storage.pb.cc  ${PROTO_GEN_DIR}/storage.pb.h
   ${PROTO_GEN_DIR}/storage.grpc.pb.cc  ${PROTO_GEN_DIR}/storage.grpc.pb.h
   ${PROTO_GEN_DIR}/metadata.pb.cc  ${PROTO_GEN_DIR}/metadata.pb.h
-  ${PROTO_GEN_DIR}/metadata.grpc.pb.cc  ${PROTO_GEN_DIR}/metadata.grpc.pb.h)
+  ${PROTO_GEN_DIR}/metadata.grpc.pb.cc  ${PROTO_GEN_DIR}/metadata.grpc.pb.h
+  ${PROTO_GEN_DIR}/raft.pb.cc  ${PROTO_GEN_DIR}/raft.pb.h
+  ${PROTO_GEN_DIR}/raft.grpc.pb.cc  ${PROTO_GEN_DIR}/raft.grpc.pb.h)
 add_custom_command(
   OUTPUT ${PROTO_GEN}
   COMMAND ${CMAKE_COMMAND} -E make_directory ${PROTO_GEN_DIR}
@@ -56,8 +58,8 @@ add_custom_command(
     --cpp_out=${PROTO_GEN_DIR}
     --grpc_out=${PROTO_GEN_DIR}
     --plugin=protoc-gen-grpc=${GRPC_CPP_PLUGIN}
-    ${PROTO_SRC_DIR}/storage.proto ${PROTO_SRC_DIR}/metadata.proto
-  DEPENDS ${PROTO_SRC_DIR}/storage.proto ${PROTO_SRC_DIR}/metadata.proto
+    ${PROTO_SRC_DIR}/storage.proto ${PROTO_SRC_DIR}/metadata.proto ${PROTO_SRC_DIR}/raft.proto
+  DEPENDS ${PROTO_SRC_DIR}/storage.proto ${PROTO_SRC_DIR}/metadata.proto ${PROTO_SRC_DIR}/raft.proto
   COMMENT "Generating gRPC/protobuf code from proto/*.proto"
   VERBATIM)
 
@@ -65,7 +67,8 @@ add_custom_command(
 # generated sources are not ours to lint.
 add_library(dos_proto
   ${PROTO_GEN_DIR}/storage.pb.cc ${PROTO_GEN_DIR}/storage.grpc.pb.cc
-  ${PROTO_GEN_DIR}/metadata.pb.cc ${PROTO_GEN_DIR}/metadata.grpc.pb.cc)
+  ${PROTO_GEN_DIR}/metadata.pb.cc ${PROTO_GEN_DIR}/metadata.grpc.pb.cc
+  ${PROTO_GEN_DIR}/raft.pb.cc ${PROTO_GEN_DIR}/raft.grpc.pb.cc)
 target_include_directories(dos_proto PUBLIC ${PROTO_GEN_DIR})
 target_link_libraries(dos_proto PUBLIC PkgConfig::GRPCPP PkgConfig::PROTOBUF Threads::Threads)
 
@@ -95,6 +98,19 @@ target_include_directories(dos_core
 # but ${SQLite3_LIBRARIES} is stable.
 target_link_libraries(dos_core PUBLIC ${SQLite3_LIBRARIES} Threads::Threads PRIVATE dos_warnings)
 
+# --- Consensus layer (Raft metadata coordination, spec Milestone 15) ----------
+# Depends on dos_proto for the Raft/metadata wire types and dos_core for the
+# status/metadata primitives. The gRPC Raft transport lives in dos_rpc (below)
+# so this library stays free of a hard gRPC-server dependency and is unit-tested
+# with the in-memory transport.
+add_library(dos_consensus
+  src/consensus/raft_storage.cc
+  src/consensus/raft_node.cc
+  src/consensus/in_memory_transport.cc
+  src/cluster/raft_metadata_repository.cc)
+target_include_directories(dos_consensus PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(dos_consensus PUBLIC dos_core dos_proto PRIVATE dos_warnings)
+
 # --- RPC layer (server, client, coordinator) ----------------------------------
 add_library(dos_rpc
   src/network/storage_node_server.cc
@@ -103,11 +119,13 @@ add_library(dos_rpc
   src/network/repairer.cc
   src/network/metadata_server.cc
   src/network/metadata_client.cc
+  src/network/raft_server.cc
+  src/network/raft_client.cc
   src/network/http_server.cc
   src/network/http_client.cc
   src/network/http_gateway.cc)
 target_include_directories(dos_rpc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(dos_rpc PUBLIC dos_core dos_proto PRIVATE dos_warnings)
+target_link_libraries(dos_rpc PUBLIC dos_core dos_consensus dos_proto PRIVATE dos_warnings)
 
 # --- Tools --------------------------------------------------------------------
 add_executable(storage_demo tools/demo/storage_demo.cc)
@@ -159,15 +177,18 @@ if(BUILD_TESTING)
     tests/unit/lru_cache_test.cc
     tests/unit/caching_metadata_view_test.cc
     tests/unit/metrics_test.cc
-    tests/unit/logging_test.cc)
-  target_link_libraries(dos_unit_tests PRIVATE dos_core dos_warnings GTest::gtest_main)
+    tests/unit/logging_test.cc
+    tests/unit/raft_storage_test.cc)
+  target_link_libraries(dos_unit_tests PRIVATE dos_core dos_consensus dos_warnings GTest::gtest_main)
   gtest_discover_tests(dos_unit_tests)
 
   add_executable(dos_integration_tests
     tests/integration/replication_test.cc
     tests/integration/metadata_split_test.cc
     tests/integration/http_gateway_test.cc
-    tests/integration/chaos_test.cc)
+    tests/integration/chaos_test.cc
+    tests/integration/raft_test.cc
+    tests/integration/raft_forwarding_test.cc)
   target_link_libraries(dos_integration_tests PRIVATE dos_rpc dos_warnings GTest::gtest_main)
   gtest_discover_tests(dos_integration_tests)
 endif()

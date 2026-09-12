@@ -4,18 +4,27 @@
 #include <grpcpp/grpcpp.h>
 
 #include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 
-#include "cluster/metadata_repository.h"
+#include "cluster/control_plane.h"
 #include "metadata.grpc.pb.h"
+#include "network/metadata_client.h"
 
 namespace dos {
 
-// gRPC front end for the control plane. Wraps a MetadataRepository and exposes
+// gRPC front end for the control plane. Wraps any ControlPlane (a single-node
+// MetadataRepository or a Raft-replicated RaftMetadataRepository) and exposes
 // placement, object-location register/lookup/remove/list, and membership.
+//
+// Reads are served locally. A mutation received on a Raft follower is forwarded
+// to the current leader (etcd-style) so clients can target any replica; if no
+// leader is known it is rejected with UNAVAILABLE. A single-node control plane
+// reports itself leader and always serves locally.
 class MetadataServiceImpl final : public rpc::Metadata::Service {
 public:
-  explicit MetadataServiceImpl(MetadataRepository& repo) : repo_(repo) {}
+  explicit MetadataServiceImpl(ControlPlane& repo) : repo_(repo) {}
 
   grpc::Status Placement(grpc::ServerContext*, const rpc::PlacementRequest*,
                          rpc::PlacementResponse*) override;
@@ -31,12 +40,21 @@ public:
                          rpc::ListNodesResponse*) override;
 
 private:
-  MetadataRepository& repo_;
+  enum class Route { kLocal, kForward, kReject };
+  // Decides where a mutation should run; on kForward, fills *leader_address.
+  Route ResolveMutation(std::string* leader_address);
+  // Returns a cached client to the leader's metadata service.
+  RemoteMetadataView* ForwardClient(const std::string& address);
+
+  ControlPlane& repo_;
+
+  std::mutex forward_mu_;
+  std::unordered_map<std::string, std::unique_ptr<RemoteMetadataView>> forward_clients_;
 };
 
 class MetadataServer {
 public:
-  explicit MetadataServer(MetadataRepository& repo) : service_(repo) {}
+  explicit MetadataServer(ControlPlane& repo) : service_(repo) {}
   ~MetadataServer() { Shutdown(); }
 
   MetadataServer(const MetadataServer&) = delete;

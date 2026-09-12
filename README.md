@@ -221,6 +221,16 @@ warm cache (`./build/micro_bench 500`):
 | 1 MB   | PUT |    85 | 85.1 | 11.9 ms  | 14.0 ms  | 14.5 ms  |
 | 1 MB   | GET |    54 | 54.3 | 17.1 ms  | 23.4 ms  | 28.2 ms  |
 
+**Distributed load test** (`./build/loadgen` against the running cluster, RF=3,
+4 KB, 80% reads) — throughput scales then saturates, and single-variable
+comparisons quantify the trade-offs (full tables in [docs/benchmarks.md](docs/benchmarks.md)):
+
+| Change | Result |
+|--------|--------|
+| 1 → 8 client threads | 1.5k → 3.8k req/s (then plateaus ~3.8k; latency climbs) |
+| RF=1 → RF=3 (writes) | throughput halves (2.5k → 1.3k req/s) — the quorum tax |
+| metadata cache on vs off (hot reads) | +30% throughput, −23% p50 latency |
+
 **Bottleneck identified:** for small objects PUT latency is dominated by the
 durability path (WAL `fsync` + object `fsync` + directory `fsync`). For large
 objects, *GET* becomes the slower op because every read **re-verifies the
@@ -265,6 +275,8 @@ docs/     architecture, storage-engine, consistency, protocol, failure-model
 - [Observability](docs/observability.md) — request IDs, structured logs,
   Prometheus metrics, Grafana.
 - [Deployment](docs/deployment.md) — one-command Docker Compose stack.
+- [Benchmarks](docs/benchmarks.md) — load generator + concurrency/RF/cache
+  experiments and the identified bottleneck.
 
 ## Roadmap
 
@@ -283,7 +295,7 @@ docs/     architecture, storage-engine, consistency, protocol, failure-model
 | ✅ M10 | Observability: request IDs, JSON logs, Prometheus `/metrics`, Grafana |
 | ✅ M11 | Docker Compose: one-command cluster + Prometheus + Grafana |
 | ✅ M12 | Kubernetes: StatefulSet nodes + PVCs, Deployments, probes (kind-validated) |
-| M13 | Performance engineering + benchmarks |
+| ✅ M13 | Performance engineering: load generator + measured concurrency/RF/cache experiments |
 | M14 | Failure & chaos testing |
 | M15 | (Optional) Raft metadata coordination |
 

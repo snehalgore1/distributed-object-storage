@@ -46,9 +46,19 @@ std::pair<std::string, int> SplitHostPort(const std::string& hp, int default_por
 
 } // namespace
 
+bool HasFlag(int argc, char** argv, const std::string& flag) {
+  for (int i = 1; i < argc; ++i) {
+    if (flag == argv[i])
+      return true;
+  }
+  return false;
+}
+
 int main(int argc, char** argv) {
   const std::string listen = ArgValue(argc, argv, "--address", "127.0.0.1:8080");
   const std::string metadata_addr = ArgValue(argc, argv, "--metadata", "127.0.0.1:9000");
+  const int rf = std::atoi(ArgValue(argc, argv, "--rf", "3").c_str());
+  const bool no_cache = HasFlag(argc, argv, "--no-cache");
 
   auto view = std::make_shared<dos::RemoteMetadataView>(metadata_addr);
   auto nodes = view->ListNodes();
@@ -62,11 +72,24 @@ int main(int argc, char** argv) {
     std::cout << "node " << n.id << " -> " << n.address << "\n";
   }
 
-  auto cache = std::make_shared<dos::CachingMetadataView>(view, /*capacity=*/4096);
-  auto coordinator =
-      std::make_shared<dos::Coordinator>(cache, clients, dos::Coordinator::Options{});
+  // RF drives a majority write quorum: rf=1 -> W=1, rf=3 -> W=2, rf=5 -> W=3.
+  dos::Coordinator::Options opts;
+  opts.replication_factor = static_cast<std::size_t>(rf < 1 ? 1 : rf);
+  opts.write_quorum = opts.replication_factor / 2 + 1;
+
+  std::shared_ptr<dos::CachingMetadataView> cache;
+  std::shared_ptr<dos::MetadataView> meta_view = view;
+  if (!no_cache) {
+    cache = std::make_shared<dos::CachingMetadataView>(view, /*capacity=*/4096);
+    meta_view = cache;
+  }
+  auto coordinator = std::make_shared<dos::Coordinator>(meta_view, clients, opts);
   dos::HttpGateway gateway(coordinator);
-  gateway.SetCacheView(cache); // expose cache hit/miss at /metrics
+  if (cache) {
+    gateway.SetCacheView(cache); // expose cache hit/miss at /metrics
+  }
+  std::cout << "config: rf=" << opts.replication_factor << " W=" << opts.write_quorum
+            << " cache=" << (no_cache ? "off" : "on") << "\n";
 
   const auto [host, port] = SplitHostPort(listen, 8080);
   if (!gateway.Start(host, port)) {

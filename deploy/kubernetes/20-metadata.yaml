@@ -1,0 +1,51 @@
+# Metadata / control plane as a Deployment (stateless — it's the authoritative
+# in-memory map; persistence/HA is a later, Raft-backed concern).
+apiVersion: v1
+kind: Service
+metadata:
+  name: dos-metadata
+  namespace: dos
+spec:
+  selector:
+    app: dos-metadata
+  ports:
+    - name: grpc
+      port: 9000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dos-metadata
+  namespace: dos
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dos-metadata
+  template:
+    metadata:
+      labels:
+        app: dos-metadata
+    spec:
+      containers:
+        - name: metadata
+          image: dos:latest
+          imagePullPolicy: IfNotPresent
+          command: ["bash", "-c", "dos_metadata --address 0.0.0.0:9000 $NODE_ARGS"]
+          env:
+            - name: NODE_ARGS
+              valueFrom:
+                configMapKeyRef:
+                  name: dos-config
+                  key: NODE_ARGS
+          ports:
+            - name: grpc
+              containerPort: 9000
+          readinessProbe:
+            tcpSocket: { port: 9000 }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: { port: 9000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10

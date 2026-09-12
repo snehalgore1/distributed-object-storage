@@ -1,0 +1,61 @@
+# HTTP gateway as a Deployment — scales independently of the storage nodes.
+apiVersion: v1
+kind: Service
+metadata:
+  name: dos-gateway
+  namespace: dos
+spec:
+  type: NodePort
+  selector:
+    app: dos-gateway
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      nodePort: 30080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dos-gateway
+  namespace: dos
+spec:
+  replicas: 2  # stateless; scale independently from storage
+  selector:
+    matchLabels:
+      app: dos-gateway
+  template:
+    metadata:
+      labels:
+        app: dos-gateway
+    spec:
+      containers:
+        - name: gateway
+          image: dos:latest
+          imagePullPolicy: IfNotPresent
+          command: ["bash", "-c", "dos_gateway --address 0.0.0.0:8080 --metadata \"$METADATA_ADDR\""]
+          env:
+            - name: METADATA_ADDR
+              valueFrom:
+                configMapKeyRef:
+                  name: dos-config
+                  key: METADATA_ADDR
+            # Illustrative Secret wiring (not yet consumed by the gateway).
+            - name: DOS_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: dos-secrets
+                  key: admin-token
+          ports:
+            - name: http
+              containerPort: 8080
+          # Readiness gates traffic until the gateway can serve; liveness
+          # restarts it if it wedges. Both hit the real /metrics handler.
+          readinessProbe:
+            httpGet: { path: /metrics, port: 8080 }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /metrics, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 10

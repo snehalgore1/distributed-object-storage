@@ -17,8 +17,10 @@ performance engineering.
 > `Metadata` gRPC service; payloads never touch it), and an **HTTP gateway + CLI
 > + LRU metadata cache** — the whole cluster is usable over `curl` — and
 > **observability** (structured JSON logs with request IDs, Prometheus
-> `/metrics`, Grafana dashboard), and a **one-command Docker Compose stack**
-> (nodes + metadata + gateway + Prometheus + Grafana). Kubernetes is next.
+> `/metrics`, Grafana dashboard), a **one-command Docker Compose stack**
+> (nodes + metadata + gateway + Prometheus + Grafana), and **Kubernetes**
+> manifests (StatefulSet storage nodes with PVCs, Deployments, probes) validated
+> on kind. This is a complete build of the spec's Core + Extended tiers.
 
 ## See it fail over
 
@@ -243,7 +245,7 @@ tests/    unit/ (GoogleTest) · integration/ (in-process gRPC cluster + gateway)
 tools/    demo/ · node/ (dos_node) · metadata/ (dos_metadata)
           gateway/ (dos_gateway) · cli/ (dos_cli) · bench/ · clusterbench/
 deploy/   docker/ (Dockerfile) · compose/ (docker-compose.yml)
-          prometheus/ · grafana/ (provisioning + dashboard)
+          prometheus/ · grafana/ (provisioning + dashboard) · kubernetes/ (kind)
 docs/     architecture, storage-engine, consistency, protocol, failure-model
 ```
 
@@ -280,7 +282,7 @@ docs/     architecture, storage-engine, consistency, protocol, failure-model
 | ✅ M9 | HTTP gateway + CLI + O(1) LRU metadata cache |
 | ✅ M10 | Observability: request IDs, JSON logs, Prometheus `/metrics`, Grafana |
 | ✅ M11 | Docker Compose: one-command cluster + Prometheus + Grafana |
-| M12 | Kubernetes (kind) |
+| ✅ M12 | Kubernetes: StatefulSet nodes + PVCs, Deployments, probes (kind-validated) |
 | M13 | Performance engineering + benchmarks |
 | M14 | Failure & chaos testing |
 | M15 | (Optional) Raft metadata coordination |

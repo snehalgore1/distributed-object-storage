@@ -53,6 +53,45 @@ docker compose -f deploy/compose/docker-compose.yml down
 docker compose -f deploy/compose/docker-compose.yml down -v
 ```
 
+## Kubernetes (kind) — Milestone 12
+
+Manifests live in [`deploy/kubernetes/`](../deploy/kubernetes). They deploy:
+
+- **Storage nodes** as a **StatefulSet** (`dos-node`, 3 replicas) — stable
+  identities `dos-node-0/1/2` via a headless Service, and a per-pod
+  **PersistentVolumeClaim** (`volumeClaimTemplates`) so object data is durable
+  across pod restarts. The node id is the pod name.
+- **Metadata** as a Deployment + Service, seeded with the node list from a
+  **ConfigMap**.
+- **Gateway** as a Deployment (2 replicas — scales independently of storage) +
+  a **NodePort** Service, reading its config from the ConfigMap and a
+  (placeholder) **Secret** env var.
+- **Liveness/readiness probes** on every component (TCP for the gRPC services,
+  HTTP `/metrics` for the gateway); readiness gates traffic so a Service never
+  routes to a pod that isn't ready.
+
+```sh
+kind create cluster --name dos --config deploy/kubernetes/kind-config.yaml
+kind load docker-image dos:latest --name dos      # after: docker build -f deploy/docker/Dockerfile -t dos:latest .
+kubectl apply -f deploy/kubernetes/
+kubectl -n dos rollout status statefulset/dos-node
+
+curl -X PUT --data-binary "hi" http://localhost:30080/objects/greeting
+curl http://localhost:30080/objects/greeting
+```
+
+**Pod restart preserves state** (verified): deleting a storage pod lets the
+StatefulSet recreate it, reattaching the *same* PVC — its `/data` (object files
++ SQLite metadata) survives and the object is still served:
+
+```sh
+kubectl -n dos delete pod dos-node-0
+kubectl -n dos wait --for=condition=Ready pod/dos-node-0
+curl http://localhost:30080/objects/greeting   # still returns "hi"
+```
+
+Tear down: `kind delete cluster --name dos`.
+
 ## Configuration
 
 Services are configured by their `command:` flags in the compose file

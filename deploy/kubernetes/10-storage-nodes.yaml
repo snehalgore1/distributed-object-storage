@@ -1,0 +1,64 @@
+# Storage nodes (data plane) as a StatefulSet: stable network identity
+# (dos-node-0/1/2) and a per-pod PersistentVolumeClaim for durable object data.
+apiVersion: v1
+kind: Service
+metadata:
+  name: dos-node
+  namespace: dos
+spec:
+  clusterIP: None  # headless: gives each pod stable DNS dos-node-<n>.dos-node
+  selector:
+    app: dos-node
+  ports:
+    - name: grpc
+      port: 9001
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: dos-node
+  namespace: dos
+spec:
+  serviceName: dos-node
+  replicas: 3
+  selector:
+    matchLabels:
+      app: dos-node
+  template:
+    metadata:
+      labels:
+        app: dos-node
+    spec:
+      containers:
+        - name: node
+          image: dos:latest
+          imagePullPolicy: IfNotPresent
+          # The node id is the (stable) pod name.
+          command: ["bash", "-c", "dos_node --id \"$POD_NAME\" --address 0.0.0.0:9001 --data-dir /data"]
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          ports:
+            - name: grpc
+              containerPort: 9001
+          readinessProbe:
+            tcpSocket: { port: 9001 }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: { port: 9001 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

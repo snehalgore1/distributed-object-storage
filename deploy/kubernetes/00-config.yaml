@@ -1,0 +1,31 @@
+# Namespace, config, and a placeholder secret for the object store (spec M12).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dos
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dos-config
+  namespace: dos
+data:
+  # Address of the metadata (control-plane) service.
+  METADATA_ADDR: "dos-metadata:9000"
+  # The node list the metadata service is seeded with. Stable per-pod DNS is
+  # provided by the headless `dos-node` service + StatefulSet ordinals.
+  NODE_ARGS: >-
+    --node dos-node-0=dos-node-0.dos-node:9001
+    --node dos-node-1=dos-node-1.dos-node:9001
+    --node dos-node-2=dos-node-2.dos-node:9001
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dos-secrets
+  namespace: dos
+type: Opaque
+stringData:
+  # Placeholder for a future gateway admin token; wired in as an env var to
+  # demonstrate Secret usage (the current gateway does not require auth).
+  admin-token: "change-me"

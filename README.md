@@ -296,7 +296,7 @@ docs/     architecture, storage-engine, consistency, protocol, failure-model
 | ✅ M11 | Docker Compose: one-command cluster + Prometheus + Grafana |
 | ✅ M12 | Kubernetes: StatefulSet nodes + PVCs, Deployments, probes (kind-validated) |
 | ✅ M13 | Performance engineering: load generator + measured concurrency/RF/cache experiments |
-| M14 | Failure & chaos testing |
+| ✅ M14 | Failure & chaos testing (fault injection under load + live chaos runner) |
 | M15 | (Optional) Raft metadata coordination |
 
 ## License

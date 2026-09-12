@@ -62,6 +62,36 @@ runs on a separate/rate-limited worker so repair traffic does not starve client
 traffic (spec pitfall); the mechanism is a plain call today and slots onto the
 existing `ThreadPool`.
 
+## Chaos testing (Milestone 14)
+
+Each failure case has a documented expected outcome and a repeatable test:
+
+| Injected fault | Expected outcome | Covered by |
+|----------------|------------------|------------|
+| Kill a node during steady GET traffic | reads keep succeeding from a surviving replica; never wrong bytes | `ChaosTest.ReadsSurviveNodeKilledDuringTraffic` |
+| Write while a node is down | quorum W=2 still met; write commits | `ChaosTest.WritesMeetQuorumWithNodeDownThenRepairRestores` |
+| Node rejoins after downtime | repair restores full redundancy (checksum-verified) | same test + `ReplicationTest.RepairRestoresRedundancyAfterNodeRejoin` |
+| Corrupt a stored object file | node detects checksum mismatch; coordinator falls back; correct bytes served | `ChaosTest.CorruptionNeverServedWrong`, `ReplicationTest.ReadFallsBackOnChecksumMismatch` |
+| Crash mid-PUT (each boundary) | interrupted write completed or discarded on restart; never a torn commit | `CrashRecoveryTest.*` |
+| Two nodes down (quorum lost) | write fails `UNAVAILABLE`; object never observable as committed | `ChaosTest.NoFalseCommitWhenQuorumLost`, `ReplicationTest.WriteFailsQuorumWithTwoReplicasDown` |
+| Replication RPC timeout | bounded client deadline; replica marked lagging → repair queue | `ReplicationTest.WriteSucceedsWithOneReplicaDown` |
+| Request queue saturated | bounded queue returns `kUnavailable` (backpressure, not OOM) | `ThreadPoolTest.FullQueueReturnsUnavailable` |
+
+The `ChaosTest` suite injects these faults **while concurrent traffic runs** and
+asserts the invariants hold (no incorrect read; no false commit; redundancy
+restored after repair).
+
+### Live chaos runner
+
+Against the running Docker Compose stack, [`tools/chaos/chaos.sh`](../tools/chaos/chaos.sh)
+repeatedly kills and restarts a storage node while reading a key, and fails if
+any read returns wrong data:
+
+```sh
+docker compose -f deploy/compose/docker-compose.yml up -d
+tools/chaos/chaos.sh            # -> PASS: every read returned correct data through the chaos
+```
+
 ## Tested guarantees
 
 - `FailureDetector` FSM: transient miss → Suspect; threshold → Unavailable;

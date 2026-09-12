@@ -166,7 +166,8 @@ if(BUILD_TESTING)
   add_executable(dos_integration_tests
     tests/integration/replication_test.cc
     tests/integration/metadata_split_test.cc
-    tests/integration/http_gateway_test.cc)
+    tests/integration/http_gateway_test.cc
+    tests/integration/chaos_test.cc)
   target_link_libraries(dos_integration_tests PRIVATE dos_rpc dos_warnings GTest::gtest_main)
   gtest_discover_tests(dos_integration_tests)
 endif()

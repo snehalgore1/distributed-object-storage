@@ -1,0 +1,7 @@
+build/
+build-*/
+.git/
+.github/
+*.gif
+*.docx
+docs/

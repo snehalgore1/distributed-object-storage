@@ -16,8 +16,9 @@ performance engineering.
 > control-plane split** (placement and the object→replica map live behind a
 > `Metadata` gRPC service; payloads never touch it), and an **HTTP gateway + CLI
 > + LRU metadata cache** — the whole cluster is usable over `curl` — and
-> **observability**: structured JSON logs with request IDs and a Prometheus
-> `/metrics` endpoint (+ Grafana dashboard). Remaining layers (Docker/K8s) are next.
+> **observability** (structured JSON logs with request IDs, Prometheus
+> `/metrics`, Grafana dashboard), and a **one-command Docker Compose stack**
+> (nodes + metadata + gateway + Prometheus + Grafana). Kubernetes is next.
 
 ## See it fail over
 
@@ -173,6 +174,21 @@ curl http://127.0.0.1:8080/objects                 # -> JSON listing
 ./build/dos_cli --gateway 127.0.0.1:8080 delete greeting
 ```
 
+## Run the whole stack (Docker Compose)
+
+One command brings up the three storage nodes (with durable volumes), the
+metadata service, the gateway, and Prometheus + Grafana:
+
+```sh
+docker compose -f deploy/compose/docker-compose.yml up --build
+# gateway  http://localhost:8080   ·  Prometheus http://localhost:9090
+# Grafana  http://localhost:3000/d/dos-overview   (anonymous viewer)
+```
+
+Objects survive an intended container restart (per-node Docker volumes), and
+Prometheus auto-scrapes the gateway. See [docs/deployment.md](docs/deployment.md)
+for the clean-start / clean-reset commands.
+
 ## Benchmarks
 
 > Reproduced on an **Apple M1 Pro (8 cores), 16 GB, macOS 26** with the exact
@@ -226,6 +242,8 @@ src/      implementations mirroring include/
 tests/    unit/ (GoogleTest) · integration/ (in-process gRPC cluster + gateway)
 tools/    demo/ · node/ (dos_node) · metadata/ (dos_metadata)
           gateway/ (dos_gateway) · cli/ (dos_cli) · bench/ · clusterbench/
+deploy/   docker/ (Dockerfile) · compose/ (docker-compose.yml)
+          prometheus/ · grafana/ (provisioning + dashboard)
 docs/     architecture, storage-engine, consistency, protocol, failure-model
 ```
 
@@ -244,6 +262,7 @@ docs/     architecture, storage-engine, consistency, protocol, failure-model
   cache.
 - [Observability](docs/observability.md) — request IDs, structured logs,
   Prometheus metrics, Grafana.
+- [Deployment](docs/deployment.md) — one-command Docker Compose stack.
 
 ## Roadmap
 
@@ -260,7 +279,7 @@ docs/     architecture, storage-engine, consistency, protocol, failure-model
 | ✅ M8 | Metadata / control-plane split (placement + object→replica map behind a gRPC service) |
 | ✅ M9 | HTTP gateway + CLI + O(1) LRU metadata cache |
 | ✅ M10 | Observability: request IDs, JSON logs, Prometheus `/metrics`, Grafana |
-| M11 | Docker Compose |
+| ✅ M11 | Docker Compose: one-command cluster + Prometheus + Grafana |
 | M12 | Kubernetes (kind) |
 | M13 | Performance engineering + benchmarks |
 | M14 | Failure & chaos testing |

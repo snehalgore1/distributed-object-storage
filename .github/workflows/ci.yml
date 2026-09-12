@@ -64,5 +64,14 @@ jobs:
       # suite, which does run here.
       - name: Test (TSan, excluding gRPC integration tests)
         run: ctest --test-dir build-tsan --output-on-failure -E 'ReplicationTest|MetadataSplitTest|HttpGatewayTest'
+
+  docker-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build runtime image
+        run: docker build -f deploy/docker/Dockerfile -t dos:ci .
+      - name: Smoke-test a binary in the image
+        run: docker run --rm dos:ci dos_cli || true  # prints usage (exit 2)
         env:
           TSAN_OPTIONS: halt_on_error=1

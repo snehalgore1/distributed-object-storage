@@ -29,7 +29,6 @@ if(DOS_SANITIZER)
 endif()
 
 # --- Dependencies -------------------------------------------------------------
-find_package(GTest REQUIRED)
 find_package(SQLite3 REQUIRED)
 find_package(Threads REQUIRED)
 
@@ -70,8 +69,7 @@ add_library(dos_proto
 target_include_directories(dos_proto PUBLIC ${PROTO_GEN_DIR})
 target_link_libraries(dos_proto PUBLIC PkgConfig::GRPCPP PkgConfig::PROTOBUF Threads::Threads)
 
-include(CTest)
-include(GoogleTest)
+include(CTest)  # defines BUILD_TESTING (default ON)
 
 # --- Core library -------------------------------------------------------------
 add_library(dos_core
@@ -138,6 +136,9 @@ target_link_libraries(cluster_demo PRIVATE dos_rpc dos_warnings)
 
 # --- Unit tests ---------------------------------------------------------------
 if(BUILD_TESTING)
+  find_package(GTest REQUIRED)
+  include(GoogleTest)
+
   add_executable(dos_unit_tests
     tests/unit/sha256_test.cc
     tests/unit/digest_test.cc

@@ -1,0 +1,101 @@
+# One-command local cluster (spec Milestone 11):
+#   docker compose -f deploy/compose/docker-compose.yml up --build
+#
+# Brings up three storage nodes (each with a durable volume), the metadata
+# control plane, the HTTP gateway, and Prometheus + Grafana wired to scrape it.
+name: dos
+
+x-node-image: &image
+  build:
+    context: ../..
+    dockerfile: deploy/docker/Dockerfile
+  image: dos:latest
+
+services:
+  node-a:
+    <<: *image
+    command: ["dos_node", "--id", "node-a", "--address", "0.0.0.0:9001", "--data-dir", "/data"]
+    volumes: ["node-a-data:/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/9001' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  node-b:
+    <<: *image
+    command: ["dos_node", "--id", "node-b", "--address", "0.0.0.0:9001", "--data-dir", "/data"]
+    volumes: ["node-b-data:/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/9001' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  node-c:
+    <<: *image
+    command: ["dos_node", "--id", "node-c", "--address", "0.0.0.0:9001", "--data-dir", "/data"]
+    volumes: ["node-c-data:/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/9001' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  metadata:
+    <<: *image
+    command:
+      - "dos_metadata"
+      - "--address"
+      - "0.0.0.0:9000"
+      - "--node"
+      - "node-a=node-a:9001"
+      - "--node"
+      - "node-b=node-b:9001"
+      - "--node"
+      - "node-c=node-c:9001"
+    depends_on:
+      node-a: { condition: service_healthy }
+      node-b: { condition: service_healthy }
+      node-c: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/9000' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  gateway:
+    <<: *image
+    command: ["dos_gateway", "--address", "0.0.0.0:8080", "--metadata", "metadata:9000"]
+    depends_on:
+      metadata: { condition: service_healthy }
+    ports: ["8080:8080"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/metrics >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    volumes:
+      - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["9090:9090"]
+    depends_on: [gateway]
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ../grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3000:3000"]
+    depends_on: [prometheus]
+
+volumes:
+  node-a-data:
+  node-b-data:
+  node-c-data:

@@ -1,49 +1,147 @@
 # Distributed Object Store
 
-A fault-tolerant distributed object storage system in C++20 — built systems-first
-to demonstrate concurrency, storage durability, distributed coordination, and
-performance engineering.
+A fault-tolerant distributed object store written in C++20: three-node
+replication with quorum writes, per-object durability and crash recovery, and a
+Raft-coordinated control plane.
 
-> **Status:** Milestones 0–15 complete. A concurrent single-node
-> storage engine (checksums, atomic durable writes, versioning, SQLite metadata,
-> bounded-queue thread pool, sharded locking — TSan-clean), a consistent-hash
-> **placement** layer, **replication over gRPC** (RF=3 / W=2 quorum,
-> checksum-verified read fallback), **conditional, idempotent writes**
-> (`expected_version` → `CONFLICT`, `request_id` dedup), **failure detection +
-> anti-entropy repair** (heartbeat state machine; a rejoining node is repaired
-> back to full redundancy), and a **write-ahead log with crash recovery**
-> (interrupted writes are completed or discarded on restart), a **metadata /
-> control-plane split** (placement and the object→replica map live behind a
-> `Metadata` gRPC service; payloads never touch it), and an **HTTP gateway + CLI
-> + LRU metadata cache** — the whole cluster is usable over `curl` — and
-> **observability** (structured JSON logs with request IDs, Prometheus
-> `/metrics`, Grafana dashboard), a **one-command Docker Compose stack**
-> (nodes + metadata + gateway + Prometheus + Grafana), and **Kubernetes**
-> manifests (StatefulSet storage nodes with PVCs, Deployments, probes) validated
-> on kind, and a **Raft-replicated metadata control plane** (leader election,
-> disk-persisted log, majority commit, follower catch-up, leader failover — the
-> control plane is no longer a single point of failure). This is a complete build
-> of the spec's Core, Extended, and Optional tiers.
+[![CI](https://github.com/snehalgore1/distributed-object-storage/actions/workflows/ci.yml/badge.svg)](https://github.com/snehalgore1/distributed-object-storage/actions/workflows/ci.yml)
+![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)
+![CMake](https://img.shields.io/badge/build-CMake%20%2B%20Ninja-064F8C.svg)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
+By Snehal Gore.
+
+I built this to go deep on the parts of systems programming that a typical
+application job never really touches: concurrency, replication, on-disk
+durability, failure handling, and distributed consensus. Rather than a wide
+feature set, the goal was a small system whose hard problems are the interesting
+ones, built up in reviewable milestones and backed by tests at every step.
+
+## What this demonstrates
+
+| Area | What's here |
+|------|-------------|
+| Language / tooling | C++20, CMake + Ninja, GoogleTest, clang-format/clang-tidy, GitHub Actions CI |
+| Concurrency | Fixed thread pool with a bounded queue, per-key sharded locking, ThreadSanitizer-clean |
+| Distributed data | Consistent-hash placement, gRPC replication (RF=3), W=2 write quorum, checksum-verified reads |
+| Durability | Atomic fsync'd writes, SHA-256 integrity, a write-ahead log, crash recovery |
+| Consensus | Raft for the metadata control plane: leader election with pre-vote, a disk-persisted log, and failover |
+| Operations | HTTP gateway + CLI, request-id tracing, Prometheus metrics, Grafana, Docker Compose, Kubernetes |
+
+131 unit and integration tests, a ThreadSanitizer job on every push, and
+benchmarks you can reproduce from the commands below.
 
 ## See it fail over
 
 A client `PUT`, a node killed mid-flight, a `GET` that still succeeds from a
-surviving replica, then anti-entropy repair restoring full redundancy on rejoin
-— end to end (`./build/cluster_demo`):
+surviving replica, then anti-entropy repair restoring full redundancy when the
+node rejoins:
 
-![Failover demo: kill a node, reads survive, repair restores redundancy](docs/failover-demo.gif)
+![Kill a node mid-traffic; reads keep succeeding; repair restores redundancy](docs/failover-demo.gif)
+
+## Highlights
+
+Each item links to the design doc that goes deeper.
+
+- **Storage engine**: a filesystem-backed store with an atomic, fsync'd write
+  path (a half-written object is never visible as committed), SHA-256 verified on
+  every read, and monotonic per-key versions with tombstone deletes.
+  [storage-engine.md](docs/storage-engine.md)
+- **Concurrency**: a fixed-size thread pool with a bounded queue (overload is
+  rejected as `UNAVAILABLE` instead of growing without limit) and sharded
+  read/write locks on the store. Clean under ThreadSanitizer.
+- **Placement**: a 64-bit consistent-hash ring with virtual nodes. Adding a
+  node moves only about 1/N of keys instead of most of them.
+  [consistency.md](docs/consistency.md)
+- **Replication**: `dos_node` storage processes behind a gRPC `StorageNode`
+  service, with a coordinator that writes to the RF=3 replica set under a W=2
+  quorum and reads with checksum-verified fallback across replicas. Conditional
+  and idempotent writes (`expected_version`, `request_id`) make retries safe.
+  [protocol.md](docs/protocol.md)
+- **Durability and repair**: every mutation goes through a CRC32-checked,
+  fsync'd write-ahead log before it's visible, so an interrupted write is
+  completed or discarded on restart. A heartbeat failure detector and an
+  anti-entropy repairer bring a rejoining node back to full redundancy.
+  [failure-model.md](docs/failure-model.md)
+- **Operability**: an HTTP/1.1 gateway and CLI over `/objects/<key>`, an O(1)
+  LRU metadata cache, per-request ids in structured JSON logs, and a Prometheus
+  `/metrics` endpoint with a Grafana dashboard.
+  [gateway.md](docs/gateway.md), [observability.md](docs/observability.md)
+- **Raft-coordinated metadata**: the control plane (membership, placement, the
+  object-to-replica map) runs as a three-node Raft group: leader election with
+  pre-vote, a disk-persisted replicated log, majority commit, follower catch-up,
+  and leader failover. It is no longer a single point of failure, and a write
+  that reaches a follower is forwarded to the leader.
+  [consensus.md](docs/consensus.md)
+- **Packaging**: a one-command Docker Compose stack (nodes, metadata, gateway,
+  Prometheus, Grafana) and Kubernetes manifests validated on kind.
+  [deployment.md](docs/deployment.md)
+
+## Quick start
+
+The fastest way to see the whole thing running is Docker Compose. It brings up
+three storage nodes with durable volumes, the metadata service, the gateway, and
+Prometheus + Grafana:
+
+```sh
+docker compose -f deploy/compose/docker-compose.yml up --build
+```
+
+Then use it over HTTP:
+
+```sh
+curl -X PUT --data-binary "hello" http://localhost:8080/objects/greeting
+curl http://localhost:8080/objects/greeting     # -> hello
+curl http://localhost:8080/objects              # -> JSON listing
+```
+
+Grafana is at `http://localhost:3000/d/dos-overview` (anonymous viewer) and
+Prometheus at `http://localhost:9090`.
+
+### Build from source
+
+Needs a C++20 compiler, CMake >= 3.20, Ninja, GoogleTest, SQLite3, gRPC +
+Protobuf, and pkg-config.
+
+```sh
+brew install cmake ninja pkgconf googletest sqlite grpc protobuf   # macOS
+
+cmake -S . -B build -G Ninja -DDOS_WERROR=ON
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+To run under a sanitizer (also `address`, `undefined`):
+
+```sh
+cmake -S . -B build-tsan -G Ninja -DDOS_SANITIZER=thread
+cmake --build build-tsan
+ctest --test-dir build-tsan --output-on-failure
+```
+
+A single-process smoke test of the storage engine:
+
+```sh
+./build/storage_demo /tmp/dos-demo
+```
+
+To run the pieces as separate processes (three storage nodes, the metadata
+service, and the gateway), see [gateway.md](docs/gateway.md). For a live
+Raft leader-election and failover demo, see
+[consensus.md](docs/consensus.md) and `tools/demo/raft_cluster_demo.sh`.
 
 ## Architecture
 
-Control plane (placement/metadata) is kept separate from the data plane (object
-bytes): metadata answers *"where and which version?"*, storage nodes answer
-*"give me the bytes."*
+The control plane and the data plane are kept separate. The metadata service
+answers "where does this key live, and at what version?" and the storage nodes
+move the bytes. Metadata is replicated with Raft; object payloads never pass
+through it.
 
 ```mermaid
 flowchart TB
     client([Client])
     coord["Coordinator<br/>RF=3 placement · W=2 write quorum<br/>checksum-verified read fallback"]
-    ring["ClusterMap + consistent-hash ring<br/>virtual nodes · replica selection"]
+    meta["Metadata control plane<br/>Raft group (3 nodes)<br/>placement · object → replica map"]
     fd["FailureDetector<br/>heartbeat state machine"]
     rep["Repairer<br/>anti-entropy"]
 
@@ -55,7 +153,7 @@ flowchart TB
     end
 
     client --> coord
-    coord -->|"look up replica set"| ring
+    coord -->|"look up / register replica set"| meta
     coord -->|"Put / Get / Delete (gRPC)"| A
     coord --> B
     coord --> C
@@ -63,245 +161,94 @@ flowchart TB
     rep -.->|"reconcile on rejoin"| C
 ```
 
-Each node: filesystem object store + per-key sharded locks + SQLite metadata +
-write-ahead log + SHA-256 integrity. See [docs/architecture.md](docs/architecture.md).
-
-## What works today
-
-- **`ObjectStore`** contract: `PUT` / `GET` / `HEAD` / `DELETE` / `LIST`.
-- **`LocalObjectStore`**: filesystem-backed store with an atomic, fsync'd write
-  path — a partially written object is never observable as committed.
-- **Integrity**: every object carries a SHA-256 checksum, verified on read;
-  corruption is detected, not served.
-- **Versioning**: monotonic per-key versions; delete is a tombstone.
-- **Metadata**: SQLite (`objects` table) behind a `MetadataStore` interface, the
-  seam for the future control/data-plane split.
-- **Concurrency**: fixed-size `ThreadPool` with a bounded queue (overload →
-  `kUnavailable`, no unbounded growth) and **sharded locking** on the object
-  store (exclusive for writes, shared for reads). ThreadSanitizer-clean.
-- **Placement**: 64-bit **consistent-hash ring** with virtual nodes and a
-  `ClusterMap`; deterministic key→node mapping and replica selection. Adding a
-  node moves only ~1/N of keys (measured: 25% vs modulo's 75% going 3→4 nodes).
-- **Replication over gRPC**: `dos_node` storage-node processes serving a
-  `StorageNode` service; a `Coordinator` writes to the RF=3 replica set with a
-  W=2 **write quorum**, reads with **checksum-verified fallback** across
-  replicas, and tracks replica health. Survives a single node down; fails a
-  write cleanly when quorum is unreachable.
-- **Conditional & idempotent writes**: `PutConditional` enforces an
-  `expected_version` (stale writers get `CONFLICT`, deterministically) and dedups
-  retries by `request_id`, so a client timeout-and-retry never creates a second
-  contradictory version. Concurrent writers on the same version → exactly one wins.
-- **Failure detection & repair**: a `FailureDetector` heartbeat state machine
-  (`Healthy → Suspect → Unavailable → Recovering → Healthy`, with a miss
-  threshold so transient blips don't declare a node dead) and a `Repairer` that
-  reconciles a rejoining node from healthy peers — checksum-verified — back to
-  full redundancy.
-- **Write-ahead log + crash recovery**: every mutation is logged (CRC32-checked,
-  fsync'd) before it becomes visible; on restart, interrupted writes are
-  completed (if the payload is durable and intact) or discarded — idempotently.
-  A torn WAL tail is detected and ignored.
-- **Control/data-plane split**: a `Metadata` gRPC service owns cluster
-  membership, consistent-hash placement, and the object→replica-set map behind a
-  `MetadataView` interface. The coordinator asks *where* to write, writes bytes
-  to storage nodes under a quorum, and registers the replica set back — **object
-  payloads never pass through the metadata service** (its records carry version,
-  checksum, size, and replica ids only).
-- **HTTP gateway, CLI & cache**: a thin HTTP/1.1 gateway (`dos_gateway`) exposes
-  `PUT/GET/HEAD/DELETE/LIST` over `/objects/<key>` — usable from `dos_cli` or
-  plain `curl` — with gRPC-`Status`→HTTP-code mapping. Reads flow through an O(1)
-  **LRU metadata cache** kept coherent on writes.
-- **Observability**: a per-request **request id** (returned as `X-Request-Id`,
-  logged in structured JSON with latency) for end-to-end tracing, and a
-  Prometheus **`/metrics`** endpoint (request/error counters, latency histograms,
-  cache hit ratio, replica state) with a ready-to-import Grafana dashboard.
-
-## Build & test
-
-Requires a C++20 compiler, CMake ≥ 3.20, Ninja, GoogleTest, SQLite3, gRPC +
-Protobuf, and pkg-config.
-
-```sh
-# macOS deps
-brew install cmake ninja pkgconf googletest sqlite grpc protobuf
-
-cmake -S . -B build -G Ninja -DDOS_WERROR=ON
-cmake --build build
-ctest --test-dir build --output-on-failure
-```
-
-Run under a sanitizer (ThreadSanitizer shown; also `address`, `undefined`):
-
-```sh
-cmake -S . -B build-tsan -G Ninja -DDOS_SANITIZER=thread
-cmake --build build-tsan
-ctest --test-dir build-tsan --output-on-failure
-```
-
-### Try it
-
-```sh
-./build/storage_demo /tmp/dos-demo
-```
-
-```
-PUT   key=greeting/hello.txt version=1 size=24 sha256=9e3697...
-GET   24 bytes: "hello, distributed world"
-      byte-identical? yes
-HEAD  version=1 deleted=0
-LIST  1 object(s)
-DELETE then GET -> NOT_FOUND: tombstoned: greeting/hello.txt (expected NOT_FOUND)
-OK
-```
-
-See [Benchmarks](#benchmarks) below for the rebalancing and throughput numbers
-(`./build/rebalance_bench`, `./build/micro_bench`).
-
-Run a three-node cluster as separate processes:
-
-```sh
-./build/dos_node --id node-a --address 127.0.0.1:9101 --data-dir /tmp/dos/a &
-./build/dos_node --id node-b --address 127.0.0.1:9102 --data-dir /tmp/dos/b &
-./build/dos_node --id node-c --address 127.0.0.1:9103 --data-dir /tmp/dos/c &
-```
-
-The `Coordinator` fans writes across the replica set and serves reads with
-checksum-verified fallback (see [docs/protocol.md](docs/protocol.md)); the
-end-to-end quorum and failover behavior is exercised in
-`tests/integration/replication_test.cc`.
-
-Or drive the whole stack over HTTP — start the metadata service, nodes, and
-gateway (see [docs/gateway.md](docs/gateway.md)), then:
-
-```sh
-curl -X PUT --data-binary "hello" http://127.0.0.1:8080/objects/greeting
-curl http://127.0.0.1:8080/objects/greeting        # -> hello
-curl http://127.0.0.1:8080/objects                 # -> JSON listing
-./build/dos_cli --gateway 127.0.0.1:8080 delete greeting
-```
-
-## Run the whole stack (Docker Compose)
-
-One command brings up the three storage nodes (with durable volumes), the
-metadata service, the gateway, and Prometheus + Grafana:
-
-```sh
-docker compose -f deploy/compose/docker-compose.yml up --build
-# gateway  http://localhost:8080   ·  Prometheus http://localhost:9090
-# Grafana  http://localhost:3000/d/dos-overview   (anonymous viewer)
-```
-
-Objects survive an intended container restart (per-node Docker volumes), and
-Prometheus auto-scrapes the gateway. See [docs/deployment.md](docs/deployment.md)
-for the clean-start / clean-reset commands.
+Each node is a filesystem object store with per-key sharded locks, SQLite
+metadata, a write-ahead log, and SHA-256 integrity. More in
+[architecture.md](docs/architecture.md).
 
 ## Benchmarks
 
-> Reproduced on an **Apple M1 Pro (8 cores), 16 GB, macOS 26** with the exact
-> commands shown. Numbers are illustrative of this machine; rerun locally rather
-> than quoting these verbatim. (The evidence rule: no number goes in a résumé
-> until it's reproducible from a documented command with stated hardware.)
+I measured these on an Apple M1 Pro (8 cores, 16 GB, macOS) with the commands
+shown. They describe this machine, so rerun them locally rather than trusting the
+exact figures.
 
-**Consistent-hash rebalancing** — growing the cluster 3 → 4 nodes
-(`./build/rebalance_bench`, 100k keys, 200 vnodes):
+**Consistent-hash rebalancing**, growing the cluster from 3 to 4 nodes
+(`./build/rebalance_bench`, 100k keys, 200 virtual nodes):
 
 | Scheme | Distribution across 3 nodes | Keys moved adding a 4th |
 |--------|-----------------------------|-------------------------|
-| Consistent hashing | 32.3% / 33.5% / 34.2% | **25.25%** (≈ ideal 1/N) |
+| Consistent hashing | 32.3% / 33.5% / 34.2% | **25.25%** (about the ideal 1/N) |
 | Modulo `hash % N`  | — | 74.99% |
 
-→ consistent hashing moves **~3× fewer keys**, and every moved key goes *only*
-to the new node (asserted in tests).
-
-**Single-node throughput & latency** — durable (fsync'd) writes, single thread,
-warm cache (`./build/micro_bench 500`):
-
-| Object size | Op  | ops/s | MB/s | p50 | p95 | p99 |
-|-------------|-----|------:|-----:|----:|----:|----:|
-| 4 KB   | PUT | 1,136 |  4.4 |  0.72 ms |  0.90 ms |  1.21 ms |
-| 4 KB   | GET | 6,139 | 24.0 |  0.16 ms |  0.18 ms |  0.21 ms |
-| 64 KB  | PUT |   580 | 36.3 |  1.60 ms |  2.03 ms |  2.38 ms |
-| 64 KB  | GET |   754 | 47.1 |  1.28 ms |  1.51 ms |  1.60 ms |
-| 1 MB   | PUT |    85 | 85.1 | 11.9 ms  | 14.0 ms  | 14.5 ms  |
-| 1 MB   | GET |    54 | 54.3 | 17.1 ms  | 23.4 ms  | 28.2 ms  |
+Consistent hashing moves roughly 3x fewer keys, and every moved key goes only to
+the new node (asserted in the tests).
 
 **Distributed load test** (`./build/loadgen` against the running cluster, RF=3,
-4 KB, 80% reads) — throughput scales then saturates, and single-variable
-comparisons quantify the trade-offs (full tables in [docs/benchmarks.md](docs/benchmarks.md)):
+4 KB objects, 80% reads). Throughput scales and then saturates, and each row
+changes one variable at a time. Full tables are in
+[benchmarks.md](docs/benchmarks.md):
 
 | Change | Result |
 |--------|--------|
-| 1 → 8 client threads | 1.5k → 3.8k req/s (then plateaus ~3.8k; latency climbs) |
-| RF=1 → RF=3 (writes) | throughput halves (2.5k → 1.3k req/s) — the quorum tax |
-| metadata cache on vs off (hot reads) | +30% throughput, −23% p50 latency |
+| 1 to 8 client threads | 1.5k to 3.8k req/s, then plateaus near 3.8k as latency climbs |
+| RF=1 to RF=3 (writes) | throughput roughly halves (2.5k to 1.3k req/s) |
+| metadata cache off to on (hot reads) | about +30% throughput, -23% p50 latency |
 
-**Bottleneck identified:** for small objects PUT latency is dominated by the
-durability path (WAL `fsync` + object `fsync` + directory `fsync`). For large
-objects, *GET* becomes the slower op because every read **re-verifies the
-SHA-256 checksum** over the whole payload, and the checksum is a portable,
-unoptimized reference implementation — hashing, not I/O, dominates 1 MB reads.
-Both are deliberate correctness costs (durability, integrity), and both are
-clear optimization targets (batch/group-commit; a hardware-accelerated hash).
+Single-node numbers (`./build/micro_bench 500`, durable writes, warm cache) for
+reference, with the full size sweep in [benchmarks.md](docs/benchmarks.md):
 
-## Layout
+| Object size | Op  | ops/s | p95 |
+|-------------|-----|------:|----:|
+| 4 KB | PUT | 1,136 | 0.90 ms |
+| 4 KB | GET | 6,139 | 0.18 ms |
+| 1 MB | PUT | 85 | 14.0 ms |
+
+The bottleneck I found: for small objects, PUT latency is dominated by the
+durability path (WAL fsync plus object fsync plus directory fsync). For large
+objects, GET is the slower op because each read re-verifies the SHA-256 checksum
+over the whole payload with a portable reference implementation, so hashing
+rather than I/O dominates a 1 MB read. Both are correctness costs I chose on
+purpose, and both are clear optimization targets (group commit, a
+hardware-accelerated hash).
+
+## Design docs
+
+- [Architecture](docs/architecture.md): components and topology.
+- [Storage engine](docs/storage-engine.md): the durability contract and exact
+  crash behavior at each write boundary.
+- [Placement and consistency](docs/consistency.md): consistent hashing, virtual
+  nodes, rebalancing.
+- [Protocol and replication](docs/protocol.md): gRPC contract, quorum,
+  conditional and idempotent writes.
+- [Failure model](docs/failure-model.md): heartbeat detection and anti-entropy
+  repair.
+- [Consensus](docs/consensus.md): Raft leader election, pre-vote, the persisted
+  log, and failover.
+- [Gateway, CLI and cache](docs/gateway.md): the HTTP API, `dos_cli`, and the
+  LRU metadata cache.
+- [Observability](docs/observability.md): request ids, structured logs,
+  Prometheus, Grafana.
+- [Deployment](docs/deployment.md): Docker Compose and Kubernetes.
+- [Benchmarks](docs/benchmarks.md): the load generator and the full result
+  tables.
+
+## Repository layout
 
 ```
-proto/    storage.proto (StorageNode) · metadata.proto (Metadata control plane)
-include/  common/ (status, sha256, hash, digest, thread_pool, lru_cache,
-                    metrics, logging)
-          cluster/ (consistent_hash_ring, cluster_map, failure_detector,
-                    metadata_view, metadata_repository, caching_metadata_view)
-          storage/ (object_store, local_object_store, sqlite_metadata_store, wal)
-          network/ (storage_node_*, metadata_*, coordinator, repairer,
-                    http_server/client, http_gateway)
+proto/    storage.proto (StorageNode) · metadata.proto · raft.proto
+include/  common/ · cluster/ · storage/ · network/ · consensus/
 src/      implementations mirroring include/
 tests/    unit/ (GoogleTest) · integration/ (in-process gRPC cluster + gateway)
-tools/    demo/ · node/ (dos_node) · metadata/ (dos_metadata)
-          gateway/ (dos_gateway) · cli/ (dos_cli) · bench/ · clusterbench/
-deploy/   docker/ (Dockerfile) · compose/ (docker-compose.yml)
-          prometheus/ · grafana/ (provisioning + dashboard) · kubernetes/ (kind)
-docs/     architecture, storage-engine, consistency, protocol, failure-model
+tools/    demo/ · node/ · metadata/ · gateway/ · cli/ · bench/ · clusterbench/
+deploy/   docker/ · compose/ · prometheus/ · grafana/ · kubernetes/
+docs/     the design docs linked above
 ```
 
-## Documentation
+## Status
 
-- [Architecture](docs/architecture.md) — components and target topology.
-- [Storage engine](docs/storage-engine.md) — durability contract and exact
-  crash behavior at each PUT boundary.
-- [Placement & consistency](docs/consistency.md) — consistent hashing, virtual
-  nodes, rebalancing.
-- [Protocol & replication](docs/protocol.md) — gRPC contract, quorum, conditional
-  & idempotent writes, consistency model.
-- [Failure model](docs/failure-model.md) — heartbeat detection and anti-entropy
-  repair.
-- [Gateway, CLI & cache](docs/gateway.md) — HTTP API, `dos_cli`, LRU metadata
-  cache.
-- [Observability](docs/observability.md) — request IDs, structured logs,
-  Prometheus metrics, Grafana.
-- [Deployment](docs/deployment.md) — one-command Docker Compose stack.
-- [Benchmarks](docs/benchmarks.md) — load generator + concurrency/RF/cache
-  experiments and the identified bottleneck.
-
-## Roadmap
-
-| Milestone | Focus |
-|-----------|-------|
-| ✅ M0 | Build/test foundation (CMake, CI, GoogleTest, clang-format) |
-| ✅ M1 | Single-node storage engine (checksums, atomic writes, versioning) |
-| ✅ M2 | Concurrency: thread pool, bounded queue, sharded locks (TSan-clean) |
-| ✅ M3 | Consistent-hash ring + virtual nodes + cluster map (placement) |
-| ✅ M4 | Replication over gRPC: RF=3, W=2 quorum, checksum-verified read fallback |
-| ✅ M5 | Versioning & idempotency (conditional PUT → CONFLICT, request-id dedup) |
-| ✅ M6 | Failure detection (heartbeat FSM) + anti-entropy replica repair |
-| ✅ M7 | Write-ahead log + crash recovery (interrupted writes completed/discarded) |
-| ✅ M8 | Metadata / control-plane split (placement + object→replica map behind a gRPC service) |
-| ✅ M9 | HTTP gateway + CLI + O(1) LRU metadata cache |
-| ✅ M10 | Observability: request IDs, JSON logs, Prometheus `/metrics`, Grafana |
-| ✅ M11 | Docker Compose: one-command cluster + Prometheus + Grafana |
-| ✅ M12 | Kubernetes: StatefulSet nodes + PVCs, Deployments, probes (kind-validated) |
-| ✅ M13 | Performance engineering: load generator + measured concurrency/RF/cache experiments |
-| ✅ M14 | Failure & chaos testing (fault injection under load + live chaos runner) |
-| ✅ M15 | Raft metadata coordination: leader election, disk-persisted replicated log, majority commit, follower catch-up, leader failover ([docs/consensus.md](docs/consensus.md)) |
+All milestones complete (M0 through M15): the core three-node system, the
+extended operability and packaging work, and the optional Raft tier for metadata
+coordination.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

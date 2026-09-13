@@ -81,8 +81,10 @@ int RaftNode::MajorityLocked() const {
 }
 
 std::chrono::milliseconds RaftNode::RandomElectionTimeout() {
+  // chrono::milliseconds::rep is `long long` on libc++ but `long` on libstdc++,
+  // so pin std::max's type explicitly to stay portable across the two.
   const long long lo = config_.election_min.count();
-  const long long hi = std::max(lo + 1, config_.election_max.count());
+  const long long hi = std::max<long long>(lo + 1, config_.election_max.count());
   std::uniform_int_distribution<long long> dist(lo, hi - 1);
   return std::chrono::milliseconds(dist(rng_));
 }

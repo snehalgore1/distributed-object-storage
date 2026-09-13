@@ -96,7 +96,10 @@ private:
   // Background actions (acquire/release mu_ internally; send RPCs unlocked).
   void ElectionLoop();                       // drives follower/candidate timeouts
   void ReplicationLoop(const std::string& peer); // leader: keep one peer current
-  void StartElection();
+  void StartElection();                      // pre-vote round, then a real election
+  // Fans a RequestVote (pre-vote or real) out to all peers and returns whether a
+  // majority granted. Adopts a higher term seen in any reply (stepping down).
+  bool WinVoteRound(const rpc::RequestVoteRequest& req, bool pre_vote, uint64_t term);
   void ReplicateTo(const std::string& peer, uint64_t term); // one AppendEntries round
 
   RaftConfig config_;
@@ -117,7 +120,8 @@ private:
   std::string leader_id_;
   uint64_t commit_index_ = 0;
   uint64_t last_applied_ = 0;
-  std::chrono::steady_clock::time_point last_activity_; // last heartbeat/vote grant
+  std::chrono::steady_clock::time_point last_activity_;       // resets the election timer
+  std::chrono::steady_clock::time_point last_leader_contact_; // last valid AppendEntries
   std::chrono::milliseconds election_timeout_{0};
 
   // Leader volatile, per peer.

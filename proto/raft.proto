@@ -33,6 +33,12 @@ message RequestVoteRequest {
   string candidate_id = 2;
   uint64 last_log_index = 3;
   uint64 last_log_term = 4;
+  // A pre-vote (Raft PhD thesis §9.6): a trial round the candidate runs at
+  // term+1 WITHOUT incrementing its own term. A voter grants it only if it
+  // would itself be willing to start an election (it has not heard from a
+  // leader recently), so a partitioned/rejoining node cannot disrupt a healthy
+  // leader by forcing a needless election.
+  bool pre_vote = 5;
 }
 message RequestVoteResponse {
   uint64 term = 1;

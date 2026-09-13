@@ -21,7 +21,7 @@ log — they move on the data plane as before. The log carries just the mutation
 
 | Component | Role |
 |-----------|------|
-| [`RaftNode`](../include/consensus/raft_node.h) | The algorithm: terms, elections, heartbeats, `AppendEntries`/`RequestVote`, majority commit, follower catch-up, leader failover, deterministic apply. |
+| [`RaftNode`](../include/consensus/raft_node.h) | The algorithm: terms, elections (with **pre-vote**), heartbeats, `AppendEntries`/`RequestVote`, majority commit, follower catch-up, leader failover, deterministic apply. |
 | [`RaftStorage`](../include/consensus/raft_storage.h) | Crash-safe durable state: `currentTerm`, `votedFor`, and the log. CRC-framed, `fsync`'d, torn-tail-tolerant (same discipline as the [WAL](storage-engine.md)). |
 | [`RaftTransport`](../include/consensus/raft_transport.h) | Outbound peer RPCs, abstracted. Two implementations: an in-memory transport for deterministic tests, and a [gRPC transport](../include/network/raft_client.h) + [server](../include/network/raft_server.h) for a real multi-process cluster. |
 | [`RaftMetadataRepository`](../include/cluster/raft_metadata_repository.h) | Binds Raft to the state machine: mutations are proposed to the log; committed entries are applied deterministically to a plain [`MetadataRepository`](../include/cluster/metadata_repository.h). Reads are served from applied state. |
@@ -47,6 +47,32 @@ guarantees durability across failover: any node that can win the next election
 must already hold every committed entry (the election "up-to-date log"
 restriction, Raft §5.4.1), so a committed mutation can never be lost.
 
+## Pre-vote: no disruptive elections
+
+A node whose election timer fires does **not** immediately bump its term and
+solicit votes. It first runs a **pre-vote** round (Raft PhD thesis §9.6): it
+asks peers "*would* you vote for me at term+1?" without changing its own term or
+`votedFor`. A peer grants a pre-vote only if it is **not itself the leader**,
+the candidate's log is at least as up-to-date, and it **has not heard from a
+leader within the election window** (a leader lease). Only on a pre-vote
+majority does the node increment its term and hold a real election.
+
+This closes two problems:
+
+- **Disruptive rejoin.** A node isolated by a partition keeps timing out, but
+  its pre-votes are refused (peers can't be reached, or on the majority side
+  they still hear the leader). It therefore never inflates its term, so when the
+  partition heals it rejoins as a follower without forcing a re-election. Under
+  basic Raft (no pre-vote) that same node returns with a wildly higher term and
+  deposes a perfectly healthy leader.
+- **Flapping under load.** A follower whose heartbeat was merely delayed (GC,
+  CPU starvation) fails its pre-vote against a live leader and quietly resets,
+  instead of triggering a spurious election.
+
+The [`raft_test`](../tests/integration/raft_test.cc) partition case asserts the
+isolated follower's term is unchanged across the outage and that the leader is
+never deposed on heal.
+
 ## What survives what
 
 | Failure | Behavior |
@@ -55,6 +81,7 @@ restriction, Raft §5.4.1), so a committed mutation can never be lost.
 | Minority (1 of 3) down or partitioned | The majority keeps electing/committing normally. The isolated node cannot win an election (no majority) and cannot commit. |
 | No majority reachable | No leader; `Propose` returns `UNAVAILABLE`. The system refuses to acknowledge a write it cannot make durable rather than losing data. |
 | Node rejoins / new node added | The leader detects its log is short (via the `AppendEntries` consistency check) and backs up `nextIndex` until it finds the match point, then ships the missing suffix — the node catches up. |
+| Node partitioned, then partition heals | **Pre-vote** (below) keeps the isolated node from inflating its term while away, so on heal it rejoins quietly — no needless re-election, no availability blip on the majority side. |
 | Whole cluster restarts | Each node reloads `currentTerm`, `votedFor`, and its log from disk, re-elects, and re-applies committed entries. Nothing committed is lost. |
 
 ## Run a live cluster

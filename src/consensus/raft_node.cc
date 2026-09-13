@@ -31,6 +31,9 @@ RaftNode::RaftNode(RaftConfig config, RaftTransport* transport, RaftStorage* sto
   voted_for_ = hs.voted_for;
   log_ = storage_->LoadedLog();
   last_activity_ = clock::now();
+  // No leader heard yet: put contact far in the past so the first election
+  // (and post-crash elections) are not blocked by the pre-vote leader lease.
+  last_leader_contact_ = clock::now() - std::chrono::hours(24);
   election_timeout_ = RandomElectionTimeout();
 }
 
@@ -107,6 +110,27 @@ void RaftNode::StepDownIfStaleLocked(uint64_t term) {
 void RaftNode::HandleRequestVote(const rpc::RequestVoteRequest& req,
                                  rpc::RequestVoteResponse* resp) {
   std::lock_guard<std::mutex> lock(mu_);
+
+  // Pre-vote: a trial round. It must NOT change our term/vote or reset the
+  // election timer. Grant only if we are not the leader, the candidate's
+  // would-be term is not stale, its log is at least as up-to-date, and we have
+  // not heard from a leader within the election window (the lease that stops a
+  // healthy leader from being disrupted).
+  if (req.pre_vote()) {
+    resp->set_term(current_term_);
+    bool grant = false;
+    if (req.term() >= current_term_ && role_ != Role::kLeader) {
+      const bool up_to_date = req.last_log_term() > LastLogTermLocked() ||
+                              (req.last_log_term() == LastLogTermLocked() &&
+                               req.last_log_index() >= LastLogIndexLocked());
+      const bool leaderless =
+          (clock::now() - last_leader_contact_) >= config_.election_min;
+      grant = up_to_date && leaderless;
+    }
+    resp->set_vote_granted(grant);
+    return;
+  }
+
   StepDownIfStaleLocked(req.term());
 
   bool grant = false;
@@ -142,10 +166,12 @@ void RaftNode::HandleAppendEntries(const rpc::AppendEntriesRequest& req,
   }
   StepDownIfStaleLocked(req.term());
 
-  // Valid leader for the current term: reset the election timer and record it.
+  // Valid leader for the current term: reset the election timer, record leader
+  // contact (feeds the pre-vote lease), and note the term.
   role_ = Role::kFollower;
   leader_id_ = req.leader_id();
   last_activity_ = clock::now();
+  last_leader_contact_ = last_activity_;
   election_timeout_ = RandomElectionTimeout();
   resp->set_term(current_term_);
 
@@ -273,11 +299,35 @@ void RaftNode::ElectionLoop() {
 }
 
 void RaftNode::StartElection() {
+  // --- Phase 1: pre-vote at term+1, WITHOUT changing our term or vote. If we
+  // cannot win a trial round we stay a follower and disturb no one. ---
+  rpc::RequestVoteRequest pre;
+  uint64_t would_be_term = 0;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (role_ == Role::kLeader) {
+      return;
+    }
+    would_be_term = current_term_ + 1;
+    pre.set_pre_vote(true);
+    pre.set_term(would_be_term);
+    pre.set_candidate_id(config_.id);
+    pre.set_last_log_index(LastLogIndexLocked());
+    pre.set_last_log_term(LastLogTermLocked());
+  }
+  if (!WinVoteRound(pre, /*pre_vote=*/true, would_be_term)) {
+    return; // not enough pre-votes (e.g., a healthy leader still leads)
+  }
+
+  // --- Phase 2: real election. Only now do we increment the term. ---
   rpc::RequestVoteRequest req;
   uint64_t term = 0;
   {
     std::lock_guard<std::mutex> lock(mu_);
-    if (role_ == Role::kLeader) {
+    // Abort if the pre-vote round changed our state: a higher term was observed
+    // and adopted, we became leader, or a leader contacted us in the meantime.
+    if (role_ == Role::kLeader || current_term_ + 1 != would_be_term ||
+        (clock::now() - last_leader_contact_) < config_.election_min) {
       return;
     }
     ++current_term_;
@@ -288,6 +338,7 @@ void RaftNode::StartElection() {
     last_activity_ = clock::now();
     election_timeout_ = RandomElectionTimeout();
     term = current_term_;
+    req.set_pre_vote(false);
     req.set_term(term);
     req.set_candidate_id(config_.id);
     req.set_last_log_index(LastLogIndexLocked());
@@ -295,21 +346,32 @@ void RaftNode::StartElection() {
     LogInfo("raft_election_started", {{"node", config_.id}, {"term", std::to_string(term)}});
   }
 
-  int votes = 1; // vote for self
+  if (WinVoteRound(req, /*pre_vote=*/false, term)) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (role_ == Role::kCandidate && current_term_ == term) {
+      BecomeLeaderLocked();
+    }
+  }
+}
+
+bool RaftNode::WinVoteRound(const rpc::RequestVoteRequest& req, bool pre_vote, uint64_t term) {
+  int votes = 1; // this node
   std::vector<std::thread> requests;
   for (const std::string& peer : config_.peers) {
-    requests.emplace_back([this, peer, &req, term, &votes] {
+    requests.emplace_back([this, peer, &req, pre_vote, term, &votes] {
       rpc::RequestVoteResponse resp;
       if (!transport_->SendRequestVote(peer, req, &resp)) {
         return;
       }
       std::lock_guard<std::mutex> lock(mu_);
-      if (current_term_ != term || role_ != Role::kCandidate) {
-        return; // stale response
-      }
       if (resp.term() > current_term_) {
-        StepDownIfStaleLocked(resp.term());
+        StepDownIfStaleLocked(resp.term()); // we are behind
         cv_.notify_all();
+        return;
+      }
+      // A real vote counts only while we remain the candidate of `term`; a
+      // pre-vote round has no such state to guard.
+      if (!pre_vote && (role_ != Role::kCandidate || current_term_ != term)) {
         return;
       }
       if (resp.vote_granted()) {
@@ -320,11 +382,8 @@ void RaftNode::StartElection() {
   for (std::thread& t : requests) {
     t.join();
   }
-
   std::lock_guard<std::mutex> lock(mu_);
-  if (role_ == Role::kCandidate && current_term_ == term && votes >= MajorityLocked()) {
-    BecomeLeaderLocked();
-  }
+  return votes >= MajorityLocked();
 }
 
 void RaftNode::BecomeLeaderLocked() {

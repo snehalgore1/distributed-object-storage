@@ -336,5 +336,57 @@ TEST(RaftClusterTest, CrashedNodeRecoversFromDiskAndCatchesUp) {
   fs::remove_all(root);
 }
 
+// PreVote guarantee: a follower isolated by a network partition keeps trying to
+// start elections, but because it can never win a pre-vote round it does NOT
+// inflate its term — so when the partition heals it rejoins quietly without
+// forcing a disruptive re-election. (Without PreVote this scenario livelocks.)
+TEST(RaftClusterTest, PartitionedFollowerDoesNotInflateTermOrDisruptLeader) {
+  const fs::path root = TempRoot();
+  RaftCluster cluster({"A", "B", "C"}, root);
+  cluster.StartAll();
+  const std::string leader = cluster.WaitForLeader(5000ms);
+  ASSERT_FALSE(leader.empty());
+
+  std::vector<std::string> committed;
+  for (int i = 1; i <= 2; ++i) {
+    const std::string cmd = "v" + std::to_string(i);
+    ASSERT_TRUE(cluster.CommitOnLeader(cmd, /*excluded=*/"", 5000ms));
+    committed.push_back(cmd);
+  }
+
+  // Partition off a follower (it keeps running but is unreachable both ways).
+  std::string follower;
+  for (const std::string& id : cluster.ids()) {
+    if (id != leader) {
+      follower = id;
+      break;
+    }
+  }
+  const uint64_t leader_term = cluster.node(leader)->current_term();
+  const uint64_t follower_term_before = cluster.node(follower)->current_term();
+  cluster.SetDown(follower, true);
+
+  // The majority (leader + the other follower) keeps committing.
+  for (int i = 3; i <= 5; ++i) {
+    const std::string cmd = "v" + std::to_string(i);
+    ASSERT_TRUE(cluster.CommitOnLeader(cmd, /*excluded=*/follower, 5000ms));
+    committed.push_back(cmd);
+  }
+
+  // Give the isolated follower ample time to attempt several elections; with
+  // PreVote each attempt fails at the trial round, so its term never rises.
+  std::this_thread::sleep_for(2000ms);
+  EXPECT_EQ(cluster.node(follower)->current_term(), follower_term_before)
+      << "partitioned follower inflated its term (PreVote not preventing it)";
+
+  // Heal the partition. The follower rejoins without disrupting the leader...
+  cluster.SetDown(follower, false);
+  EXPECT_TRUE(cluster.WaitConverged(committed, /*excluded=*/"", 5000ms));
+  EXPECT_TRUE(cluster.node(leader)->is_leader()) << "rejoining follower disrupted the leader";
+  EXPECT_EQ(cluster.node(leader)->current_term(), leader_term)
+      << "rejoining follower forced a needless re-election";
+  fs::remove_all(root);
+}
+
 } // namespace
 } // namespace dos::consensus

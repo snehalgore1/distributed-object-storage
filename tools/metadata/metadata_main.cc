@@ -6,12 +6,12 @@
 //
 // Raft-replicated control plane (spec Milestone 15): run three of these, each
 // with a distinct --id and the other two as --raft-peer. Metadata writes survive
-// a leader failure and no committed mutation is lost.
-//   dos_metadata --id A --address 0.0.0.0:9000 --raft-address 0.0.0.0:9100 \
-//       --raft-dir /var/lib/dos/raft-A \
-//       --raft-peer B=hostB:9101 --raft-peer C=hostC:9102 \
-//       --peer-meta B=hostB:9000 --peer-meta C=hostC:9000 \
-//       --node node-a=... --node node-b=... --node node-c=...
+// a leader failure and no committed mutation is lost. For node A:
+//   dos_metadata --id A --address 0.0.0.0:9000 --raft-address 0.0.0.0:9100
+//     --raft-dir /var/lib/dos/raft-A
+//     --raft-peer B=hostB:9101 --raft-peer C=hostC:9102
+//     --peer-meta B=hostB:9000 --peer-meta C=hostC:9000
+//     --node node-a=... --node node-b=... --node node-c=...
 //
 // --peer-meta gives each peer's *metadata* address (distinct from its Raft
 // address) so a write received on a follower can be forwarded to the leader.

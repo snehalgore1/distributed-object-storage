@@ -95,8 +95,8 @@ public:
       std::lock_guard<std::mutex> lock(log->mu);
       log->commands.push_back(e.command);
     };
-    auto node = std::make_unique<RaftNode>(Config(id), transports_[id].get(),
-                                           storages_[id].get(), apply);
+    auto node =
+        std::make_unique<RaftNode>(Config(id), transports_[id].get(), storages_[id].get(), apply);
     wire_.Register(id, node.get());
     nodes_[id] = std::move(node);
   }

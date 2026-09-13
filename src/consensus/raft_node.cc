@@ -76,9 +76,7 @@ uint64_t RaftNode::TermAtLocked(uint64_t index) const {
   return log_[index - 1].term; // log_[k-1].index == k
 }
 
-int RaftNode::MajorityLocked() const {
-  return static_cast<int>(config_.peers.size() + 1) / 2 + 1;
-}
+int RaftNode::MajorityLocked() const { return static_cast<int>(config_.peers.size() + 1) / 2 + 1; }
 
 std::chrono::milliseconds RaftNode::RandomElectionTimeout() {
   // chrono::milliseconds::rep is `long long` on libc++ but `long` on libstdc++,
@@ -101,8 +99,7 @@ void RaftNode::StepDownIfStaleLocked(uint64_t term) {
     role_ = Role::kFollower;
     PersistHardStateLocked();
     if (was_active) {
-      LogInfo("raft_step_down",
-              {{"node", config_.id}, {"term", std::to_string(current_term_)}});
+      LogInfo("raft_step_down", {{"node", config_.id}, {"term", std::to_string(current_term_)}});
     }
   }
 }
@@ -125,8 +122,7 @@ void RaftNode::HandleRequestVote(const rpc::RequestVoteRequest& req,
       const bool up_to_date = req.last_log_term() > LastLogTermLocked() ||
                               (req.last_log_term() == LastLogTermLocked() &&
                                req.last_log_index() >= LastLogIndexLocked());
-      const bool leaderless =
-          (clock::now() - last_leader_contact_) >= config_.election_min;
+      const bool leaderless = (clock::now() - last_leader_contact_) >= config_.election_min;
       grant = up_to_date && leaderless;
     }
     resp->set_vote_granted(grant);
@@ -136,14 +132,13 @@ void RaftNode::HandleRequestVote(const rpc::RequestVoteRequest& req,
   StepDownIfStaleLocked(req.term());
 
   bool grant = false;
-  if (req.term() == current_term_ &&
-      (voted_for_.empty() || voted_for_ == req.candidate_id())) {
+  if (req.term() == current_term_ && (voted_for_.empty() || voted_for_ == req.candidate_id())) {
     // Grant only if the candidate's log is at least as up-to-date (paper §5.4.1).
     const uint64_t my_last_term = LastLogTermLocked();
     const uint64_t my_last_index = LastLogIndexLocked();
-    const bool up_to_date = req.last_log_term() > my_last_term ||
-                            (req.last_log_term() == my_last_term &&
-                             req.last_log_index() >= my_last_index);
+    const bool up_to_date =
+        req.last_log_term() > my_last_term ||
+        (req.last_log_term() == my_last_term && req.last_log_index() >= my_last_index);
     if (up_to_date) {
       grant = true;
       voted_for_ = req.candidate_id();
@@ -396,8 +391,7 @@ void RaftNode::BecomeLeaderLocked() {
     next_index_[peer] = next;
     match_index_[peer] = 0;
   }
-  LogInfo("raft_leader_elected",
-          {{"node", config_.id}, {"term", std::to_string(current_term_)}});
+  LogInfo("raft_leader_elected", {{"node", config_.id}, {"term", std::to_string(current_term_)}});
   cv_.notify_all(); // kick replication loops into sending immediate heartbeats
 }
 

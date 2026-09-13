@@ -88,8 +88,8 @@ int main(int argc, char** argv) {
 
     auto storage = dos::consensus::RaftStorage::Open(raft_dir);
     if (!storage.ok()) {
-      std::cerr << "failed to open raft dir " << raft_dir << ": "
-                << storage.status().ToString() << "\n";
+      std::cerr << "failed to open raft dir " << raft_dir << ": " << storage.status().ToString()
+                << "\n";
       return 1;
     }
     auto raft_storage = std::move(storage).value();

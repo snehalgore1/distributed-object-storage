@@ -26,8 +26,8 @@ namespace consensus {
 // values. The election timeout is drawn uniformly from [min, max) per attempt
 // so split votes resolve (paper §5.2).
 struct RaftConfig {
-  std::string id;                  // this node's stable id
-  std::vector<std::string> peers;  // peer ids (excludes self)
+  std::string id;                 // this node's stable id
+  std::vector<std::string> peers; // peer ids (excludes self)
   std::chrono::milliseconds election_min{150};
   std::chrono::milliseconds election_max{300};
   std::chrono::milliseconds heartbeat{50};
@@ -94,9 +94,9 @@ private:
   std::chrono::milliseconds RandomElectionTimeout();
 
   // Background actions (acquire/release mu_ internally; send RPCs unlocked).
-  void ElectionLoop();                       // drives follower/candidate timeouts
+  void ElectionLoop();                           // drives follower/candidate timeouts
   void ReplicationLoop(const std::string& peer); // leader: keep one peer current
-  void StartElection();                      // pre-vote round, then a real election
+  void StartElection();                          // pre-vote round, then a real election
   // Fans a RequestVote (pre-vote or real) out to all peers and returns whether a
   // majority granted. Adopts a higher term seen in any reply (stepping down).
   bool WinVoteRound(const rpc::RequestVoteRequest& req, bool pre_vote, uint64_t term);

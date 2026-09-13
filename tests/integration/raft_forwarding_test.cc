@@ -45,9 +45,8 @@ struct MetaNode {
 class RaftForwardingTest : public ::testing::Test {
 protected:
   void SetUp() override {
-    root_ = fs::temp_directory_path() /
-            ("dos_raftfwd_" + std::to_string(::getpid()) + "_" +
-             std::to_string(counter_.fetch_add(1)));
+    root_ = fs::temp_directory_path() / ("dos_raftfwd_" + std::to_string(::getpid()) + "_" +
+                                         std::to_string(counter_.fetch_add(1)));
     fs::remove_all(root_);
 
     const std::vector<std::string> ids = {"A", "B", "C"};
